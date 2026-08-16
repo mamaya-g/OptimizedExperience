@@ -1,0 +1,32 @@
+# Copy to reliability_profile.yaml (gitignored) and tune as real self-collected
+# history accumulates via `scripts/collect_status_log.py`.
+#
+# This is a hand-seeded starting point, not a measured dataset — no public API
+# exposes Disneyland-specific breakdown history (see plan notes). Tiers below
+# are a qualitative guess: complex, animatronic/ride-vehicle-heavy attractions
+# tend to be less reliable than simple mechanical ones.
+default_tier: MEDIUM
+
+reliability:
+  # Complex, historically downtime-prone (LOW = front-load into the morning)
+  starwarsriseoftheresistance: LOW
+  indianajonesadventure: LOW
+  millenniumfalconsmugglersrun: LOW
+  matterhornbobsleds: LOW
+  piratesofthecaribbean: LOW
+
+  # Simple mechanical attractions, rarely go down (HIGH = flat across the day)
+  autopia: HIGH
+  astroorbitor: HIGH
+  kingarthurcarrousel: HIGH
+  madteaparty: HIGH
+  dumbotheflyingelephant: HIGH
+  mainstreetvehicles: HIGH
+  disneylandmonorail: HIGH
+
+# Attractions that get you wet — keyed by slug where available, entity id
+# otherwise (some newer attractions don't yet have a slug in the API).
+water_rides:
+  - a9076acd-7630-4bad-a8da-e6bd689ddcac  # Tiana's Bayou Adventure
+  - findingnemosubmarinevoyage             # minor splash, mostly enclosed
+  - davycrockettsexplorercanoes            # open canoes, occasional splash

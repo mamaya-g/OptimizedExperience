@@ -1,0 +1,29 @@
+# Copy to preferences.yaml (gitignored) and edit for your own visit.
+#
+# water_ride_comfort:
+#   MIND_IF_COOL       - avoid water rides during cooler/overcast forecast hours
+#   DONT_MIND          - ignore weather when scoring water rides
+#   PREFER_AFTERNOON   - actively favor water rides in the afternoon forecast window
+water_ride_comfort: MIND_IF_COOL
+
+# Attraction tiers, keyed by slug (see backend/tests/fixtures/disneyland_aug16/children.json
+# for the full list of slugs). Anything left out gets a low default prize so the
+# optimizer can still opportunistically slot it in.
+#   MUST_GO       - highest priority
+#   NICE_TO_HAVE  - included, lower priority
+#   SKIP          - excluded from candidates entirely
+tiers:
+  starwarsriseoftheresistance: MUST_GO
+  millenniumfalconsmugglersrun: MUST_GO
+  indianajonesadventure: MUST_GO
+  matterhornbobsleds: MUST_GO
+  spacemountain: MUST_GO
+  bigthundermountainrailroad: NICE_TO_HAVE
+  piratesofthecaribbean: NICE_TO_HAVE
+  hauntedmansion: NICE_TO_HAVE
+  junglecruise: NICE_TO_HAVE
+  startourstheadventurescontinue: NICE_TO_HAVE
+  buzzlightyearastroblasters: NICE_TO_HAVE
+  autopia: SKIP
+  mainstreetvehicles: SKIP
+  disneylandmonorail: SKIP
