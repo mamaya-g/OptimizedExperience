@@ -1,0 +1,27 @@
+# Render blueprint for the FastAPI backend. Deploy: connect this repo in the
+# Render dashboard (New -> Blueprint), which reads this file automatically.
+# See README.md's Deployment section for the exact click-through steps and
+# how to wire this up with the Vercel-deployed frontend.
+services:
+  - type: web
+    name: optimized-experience-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: |
+      pip install -e .
+      mkdir -p config
+      cp -n config/preferences.example.yaml config/preferences.yaml
+      cp -n config/reliability_profile.example.yaml config/reliability_profile.yaml
+      cp -n config/land_map.example.yaml config/land_map.yaml
+    startCommand: uvicorn optimized_experience.api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.14
+      - key: PYTHONPATH
+        value: src
+      # Set to the deployed Vercel frontend URL (comma-separate multiple
+      # origins). Defaults to localhost:3000 if unset -- update this once the
+      # frontend has a real URL, or the browser's CORS preflight will fail.
+      - key: CORS_ALLOWED_ORIGINS
+        value: http://localhost:3000
