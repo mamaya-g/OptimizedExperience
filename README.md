@@ -1,9 +1,10 @@
 # Optimized Experience
 
 A Disneyland single-day itinerary optimizer -- a "day co-pilot" that turns your
-attraction preferences (must-go / nice-to-have / skip) plus live park data
-into a full-day recommended schedule, then keeps it fresh as conditions
-change through the day.
+attraction preferences (must-see / would-like / skip), meal and parade/show
+plans, and live park data into a full-day recommended schedule, then keeps it
+fresh as conditions change through the day. A companion for planning a great
+day at the park, not a clone of Disney's own app.
 
 Unlike Disney's own app (which is reactive -- current wait times, book-the-next-Lightning-Lane),
 this is anticipatory: it generates a plan up front, factors in things Disney's
@@ -11,14 +12,16 @@ app doesn't reason about at all (which attractions historically go down and
 when, live/forecast weather for water-ride comfort), and offers an "All Rides
 Challenge" mode for guests trying to ride everything in one day.
 
-See `/Users/decipherer/.claude/plans/graceful-watching-toast.md` for the full
-design rationale (API comparisons, algorithm choice, AI Council review).
+See `/Users/decipherer/.claude/plans/graceful-watching-toast.md` for the
+original design rationale (API comparisons, algorithm choice, AI Council
+review) behind the current UI. `CLAUDE.md` in this repo is the up-to-date
+architecture reference and doesn't require reading that doc.
 
 ## Status
 
-**Phase 1 + Plan 2 + Plan 3 (current):** the full stack is live -- Python
-backend (two solvers, CLI, HTTP API) and a Next.js itinerary viewer, both
-running against real Disneyland/weather data end to end.
+**Full stack, live end to end, browser-driven onboarding.** Python backend
+(two solvers, CLI, HTTP API) and a Next.js app with an in-browser preference
+flow, both running against real Disneyland/weather data.
 
 - Phase 1: greedy solvers (`MAXIMIZE_PRIZE` / `ALL_RIDES_CHALLENGE`) + CLI.
 - Plan 2: realism the phase-1 greedy oversimplified -- an optional Lightning
@@ -27,10 +30,26 @@ running against real Disneyland/weather data end to end.
   strategies, and hourly wait-time forecasting.
 - Plan 3: an OR-Tools routing solver (a genuine global search, not a
   heuristic) behind the same `Solver` contract, plus a FastAPI backend and a
-  Next.js itinerary-viewer frontend, deployable to Render + Vercel.
-
-See `/Users/decipherer/.claude/plans/graceful-watching-toast.md` for the full
-design rationale of each round.
+  first, viewer-only Next.js frontend.
+- Plan 4: the frontend was rebuilt around what a guest actually needs after
+  trying the viewer-only version -- a full onboarding flow in the browser
+  (attraction picker grouped by land with an inline repeat-ride stepper,
+  meals/shopping/snack with hard time bounds on lunch/dinner, a
+  parade/nighttime-show picker with real showtimes, a plain-language
+  Lightning Lane explainer, water-ride weather comfort, walking pace, and
+  arrival/departure) and three swipeable result views -- Optimized
+  (read-only, real wait times + ride durations + a plain-language reason on
+  every card, tap any card to mark it done), Adjust (reorder, swap in
+  anything that didn't make the cut, re-optimize from your manual edits), and
+  Build Your Own (same mechanism, empty start). No solver/prize jargon
+  anywhere in the primary UI. Two real bugs were found and fixed while
+  actually using it: a blanket "see a parade?" toggle would have force-scheduled
+  *every* show in a category (this park runs several nighttime spectaculars
+  in rotation) -- fixed by picking a specific show by id instead -- and
+  repeat-ride requests (e.g. "ride Space Mountain 3x") were landing
+  back-to-back in one sitting because a travel-minimizing solver treats
+  revisiting the same location as free -- fixed by giving each repeat visit
+  its own slice of the day.
 
 **Deferred:** indoor/outdoor/shaded queue status per attraction -- no
 reliable public data source covers all ~50 attractions (only scattered blog
@@ -38,6 +57,29 @@ mentions of a handful of "notable" queues). When better data exists, this
 would plug into the exact same hour-dependent multiplier pattern
 `scoring.py` already uses for weather-comfort (`weather_comfort_factor()`),
 alongside a new `indoor_outdoor_factor()`.
+
+## What's real data vs. hand-authored
+
+Every wait time, Lightning Lane type/return-window/price, showtime, and park
+hour shown anywhere in this project comes live from themeparks.wiki --
+nothing there is invented. A handful of things have no public API at all, so
+they're best-effort estimates I typed in myself, each disclosed in its config
+file's header comment:
+
+- **Ride durations** (`config/ride_durations.example.yaml`) -- public
+  knowledge of actual ride length, not a measurement.
+- **Reliability tiers** (`config/reliability_profile.example.yaml`) -- my own
+  qualitative judgment of breakdown-proneness.
+- **Land assignments** (`config/land_map.example.yaml`) -- no API groups
+  attractions by land.
+- **Show categories** (`config/show_categories.example.yaml`) -- parade vs.
+  nighttime spectacular vs. incidental entertainment.
+
+The plain-language reason shown on each scheduled step (`guest_rationale`) is
+generated by a rule-based function reading these real signals -- it's not a
+literal transcript of the solver's reasoning (OR-Tools' actual search isn't
+reducible to a sentence), but it's honest about the specific facts behind
+each slot (live wait, weather, reliability timing, tier, Lightning Lane).
 
 ## How it works
 
@@ -51,31 +93,37 @@ alongside a new `indoor_outdoor_factor()`.
   same hour-dependent multiplier on a node's prize (an Orienteering Problem
   with Stochastic Profits, approximated via expected-value discounting).
   Lightning Lane Multi Pass is modeled as a capacity-1 resource -- only one
-  booked hold at a time, which is the actual "Waze" analogue in this project
-  (continuous recalculation of when to book/redeem), more than pathfinding is.
+  booked hold at a time.
 - **Solvers:** a naive greedy heuristic (fast, myopic, phase 1) and an
   OR-Tools routing solver (`optimizer/ortools_solver.py`) -- a genuine
   prize-collecting VRPTW global search over real travel time, not a
   step-by-step heuristic. Both implement the same `Solver` contract, selected
-  via `optimizer/factory.py`'s `get_solver()`. Run
-  `scripts/compare_solvers.py` to see total prize + solve time for both side
-  by side on the same day; OR-Tools should score at least as well, being a
-  genuine search rather than a myopic pass, though it makes its own
-  documented simplifications (see that module's docstring) to stay
-  tractable.
+  via `optimizer/factory.py`'s `get_solver()`. The live API always uses
+  OR-Tools; solver choice is a CLI/demo-only concern, never exposed in the
+  primary UI. Run `scripts/compare_solvers.py` to see total prize + solve
+  time for both side by side on the same day.
 - **Real walking time:** haversine distance between attractions' actual
   coordinates, divided by a guest-selected walking pace (slow/average/fast).
   No official "land" grouping exists in any API, so land-to-attraction
-  mapping is hand-seeded (`config/land_map.example.yaml`), same pattern as
-  the reliability tiers. Three navigation strategies -- time-optimal, a
-  guest-specified land order, or a soft same-land clustering preference --
-  can all be solved and compared side by side (`--navigation compare`).
-- **Meal/shopping blocks:** mandatory `ACTIVITY` nodes that reuse the exact
-  scheduling machinery attractions/shows already use (a narrow feasibility
-  window + a forcing prize constant), not a parallel subsystem. Each block
-  picks one of three placement styles: a preferred time range, an exact
-  fixed time, or "solver chooses" (with a sensible default hour-of-day window
-  per meal kind, not "any time" -- see `planning._SOLVER_CHOICE_DEFAULT_WINDOW`).
+  mapping is hand-seeded, same pattern as the reliability tiers. Three
+  navigation strategies -- time-optimal, a guest-specified land order, or a
+  soft same-land clustering preference -- can all be solved and compared
+  side by side (`--navigation compare`).
+- **Meal/shopping/snack blocks:** mandatory `ACTIVITY` nodes that reuse the
+  exact scheduling machinery attractions/shows already use. Lunch and dinner
+  are hard-bounded to 11am-3pm and 5-11pm respectively (enforced both in the
+  browser's time picker and server-side); snack and shopping are
+  unconstrained.
+- **Parades/nighttime shows:** a guest picks a *specific* show by id (not a
+  blanket "any parade" toggle), which is then treated as mandatory the same
+  way a meal block is -- guaranteed a scheduling attempt, honestly reported
+  if it truly can't fit.
+- **Repeat rides:** requesting a ride N times duplicates it into N candidate
+  nodes, each restricted to its own slice of the day, so the solver can't
+  cluster them back-to-back just because that's cheaper to route.
+- **Per-step justification:** every scheduled step carries a plain-language
+  reason grounded in real signals (see "What's real data" above), separate
+  from an internal solver-prose field that's never shown in the primary UI.
 
 ## Running it (backend)
 
@@ -88,6 +136,8 @@ python3.12 -m venv .venv   # project targets Python >=3.11 (uses `X | None` unio
 cp config/preferences.example.yaml config/preferences.yaml
 cp config/reliability_profile.example.yaml config/reliability_profile.yaml
 cp config/land_map.example.yaml config/land_map.yaml
+cp config/ride_durations.example.yaml config/ride_durations.yaml
+cp config/show_categories.example.yaml config/show_categories.yaml
 ```
 
 > Note: editable installs (`pip install -e`) may not add the package to
@@ -137,8 +187,14 @@ PYTHONPATH=src .venv/bin/python scripts/compare_solvers.py
 
 ```bash
 PYTHONPATH=src .venv/bin/uvicorn optimized_experience.api.main:app --reload
-# GET http://localhost:8000/api/plan?objective=maximize_prize&solver=greedy
+# POST http://localhost:8000/api/plan?objective=maximize_prize   (body: Preferences JSON)
+# GET  http://localhost:8000/api/attractions
 ```
+
+Before starting a server for manual testing, check for a stale leftover
+process on the port first (`lsof -nP -iTCP:8000 -sTCP:LISTEN`) -- an old
+server from a previous session silently serving outdated code is an easy way
+to misdiagnose a "fix" as not working.
 
 ### Run the tests
 
@@ -159,9 +215,8 @@ PYTHONPATH=src .venv/bin/python scripts/collect_status_log.py
 
 ## Running it (frontend)
 
-An itinerary-viewer-only Next.js app (v1 scope -- see the plan notes: no
-in-browser editing of tiers/activities/etc., that stays file-based via
-`preferences.yaml`; just view a live-solved plan and toggle objective/solver).
+A full in-browser onboarding + itinerary experience -- no accounts, all
+preferences persist to `localStorage`.
 
 ```bash
 cd frontend
@@ -170,6 +225,11 @@ cp .env.example .env.local   # points at the local backend by default
 npm run dev
 # open http://localhost:3000 (make sure the backend is running too, see above)
 ```
+
+First visit walks through a 7-step onboarding flow (attractions, meals &
+shopping, parades & shows, water rides, Lightning Lane, walking pace,
+arrival & departure), then solves and lands on the three-view results
+screen. "Edit preferences" re-opens the same flow pre-filled at any time.
 
 ## Deployment
 
@@ -201,15 +261,22 @@ going live needs your own accounts connected -- I can't do that step for you.
 ```
 backend/
   src/optimized_experience/
-    data/         # themeparks.wiki + NWS weather clients, preferences, reliability, lands
-    optimizer/    # PlanRequest/Plan contract, solvers (greedy + OR-Tools), scoring, geography, navigation
-    api/          # FastAPI app (main.py) -- the HTTP surface for the frontend
+    data/         # themeparks.wiki + NWS weather clients, preferences, reliability,
+                   # lands, ride_durations, shows (all hand-authored config loaders)
+    optimizer/    # PlanRequest/Plan contract, solvers (greedy + OR-Tools), scoring,
+                   # geography, navigation, rationale (per-step guest-facing justification)
+    api/          # FastAPI app (main.py) -- POST /api/plan, GET /api/attractions
     planning.py   # bridges data layer -> optimizer contract
     cli.py        # entrypoint
   tests/          # unit tests + recorded fixtures (offline, deterministic)
   scripts/        # demo_plan.py, compare_solvers.py, collect_status_log.py
-  config/         # preferences.example.yaml, reliability_profile.example.yaml, land_map.example.yaml
+  config/         # preferences/reliability_profile/land_map/ride_durations/
+                   # show_categories .example.yaml
 frontend/
-  app/            # Next.js App Router -- itinerary viewer (page.tsx, components/, lib/)
+  app/
+    onboarding/   # OnboardingFlow.tsx (7-step wizard), AttractionPicker.tsx
+    components/   # ThreeViewResults.tsx, StepCard.tsx, ManualScheduleView.tsx
+    lib/          # api.ts, types.ts, storage.ts (localStorage), manualSchedule.ts, nudge.ts
+    page.tsx       # onboarding vs. results orchestration
 render.yaml       # Render deploy config for the backend (repo root, per Render's convention)
 ```
