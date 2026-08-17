@@ -3,7 +3,7 @@ from datetime import datetime
 from optimized_experience.data.preferences import WaterRideComfort
 from optimized_experience.optimizer.contracts import PlanRequest, TimeWindow
 from optimized_experience.optimizer.greedy import GreedySolver
-from conftest import CLOSE, START, make_attraction, make_show
+from conftest import CLOSE, START, make_activity, make_attraction, make_show
 
 
 def _solve(nodes, **overrides):
@@ -99,6 +99,75 @@ def test_water_ride_not_discounted_when_comfort_is_dont_mind():
         hourly_forecast=cool_forecast,
     )
     assert plan.total_prize == 100.0
+
+
+def test_forecasted_wait_overrides_static_estimate_at_scoring_time():
+    from optimized_experience.optimizer.contracts import WaitForecastEntry
+
+    # Static estimate says a long wait, but the hourly forecast for the plan's
+    # actual start hour says it's short -- the solver should use the forecast.
+    node = make_attraction(
+        "a", base_prize=100, service_time_minutes=3, wait_estimate_minutes=60,
+        wait_forecast=[WaitForecastEntry(hour=START, wait_minutes=5)],
+    )
+    plan = _solve([node])
+    step = plan.steps[0]
+    actual_cost_minutes = (step.planned_departure - step.planned_arrival).total_seconds() / 60
+    assert actual_cost_minutes == 5 + 3  # forecast (5) + service, not static estimate (60) + service
+
+
+def test_wait_forecast_falls_back_to_static_estimate_for_unforecasted_hour():
+    from optimized_experience.optimizer.contracts import WaitForecastEntry
+
+    node = make_attraction(
+        "a", base_prize=100, service_time_minutes=3, wait_estimate_minutes=20,
+        wait_forecast=[WaitForecastEntry(hour=datetime(2026, 8, 16, 15, 0), wait_minutes=5)],
+    )
+    plan = _solve([node])  # solved starting at 9am, no forecast entry for that hour
+    step = plan.steps[0]
+    actual_cost_minutes = (step.planned_departure - step.planned_arrival).total_seconds() / 60
+    assert actual_cost_minutes == 20 + 3  # falls back to the static estimate
+
+
+def test_mandatory_activity_gets_scheduled_over_competing_attractions():
+    lunch = make_activity(
+        "lunch", time_windows=[TimeWindow(start=datetime(2026, 8, 16, 12, 0), end=datetime(2026, 8, 16, 13, 30))],
+    )
+    # A very high-prize attraction competing for the same window -- lunch must still win.
+    attraction = make_attraction(
+        "rival", base_prize=100, service_time_minutes=3, wait_estimate_minutes=5,
+        time_windows=[TimeWindow(start=datetime(2026, 8, 16, 12, 0), end=datetime(2026, 8, 16, 13, 30))],
+    )
+    plan = _solve([lunch, attraction])
+    actions = [s.action for s in plan.steps]
+    assert "DO_ACTIVITY" in actions
+    assert "lunch" not in plan.unscheduled_mandatory_node_ids
+
+
+def test_mandatory_activity_prize_does_not_inflate_total_prize():
+    # Regression: mandatory activities use a huge forcing prize constant to
+    # guarantee scheduling -- that constant must not leak into the
+    # guest-facing total_prize metric, or it becomes meaningless (e.g.
+    # "200,668" instead of a number that reflects real preferences).
+    lunch = make_activity(
+        "lunch", time_windows=[TimeWindow(start=datetime(2026, 8, 16, 12, 0), end=datetime(2026, 8, 16, 13, 0))],
+    )
+    attraction = make_attraction("a", base_prize=40, service_time_minutes=3, wait_estimate_minutes=5)
+    plan = _solve([lunch, attraction])
+    assert plan.total_prize < 1000  # nowhere near the 100,000 forcing constant
+    assert plan.total_prize == 40.0  # only the real attraction's prize counts
+
+
+def test_infeasible_fixed_time_activity_honestly_reported_as_unscheduled_mandatory():
+    # Fixed at a time the budget can't reach: park closes at CLOSE (10pm) but
+    # the "reservation" is set for after that.
+    late_dinner = make_activity(
+        "dinner", time_windows=[TimeWindow(start=datetime(2026, 8, 16, 23, 0), end=datetime(2026, 8, 16, 23, 45))],
+    )
+    plan = _solve([late_dinner])
+    assert plan.unscheduled_mandatory_node_ids == ["dinner"]
+    assert plan.unscheduled_node_ids == []
+    assert plan.steps == []
 
 
 def test_unscheduled_nodes_reported_when_time_budget_too_small():

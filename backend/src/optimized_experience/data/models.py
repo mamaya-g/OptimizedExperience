@@ -69,6 +69,11 @@ class Showtime(_LenientModel):
     endTime: datetime
 
 
+class ForecastEntry(_LenientModel):
+    time: datetime
+    waitTime: int | None = None
+
+
 LiveStatus = Literal["OPERATING", "DOWN", "CLOSED", "REFURBISHMENT"]
 
 
@@ -80,6 +85,7 @@ class LiveDataEntry(_LenientModel):
     queue: Queue | None = None
     showtimes: list[Showtime] = []
     operatingHours: list[OperatingHoursPeriod] = []
+    forecast: list[ForecastEntry] = []
     lastUpdated: datetime | None = None
 
 

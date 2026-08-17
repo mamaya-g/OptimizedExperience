@@ -5,6 +5,7 @@ swapping solvers is an addition, not a rewrite.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Literal, Protocol
 
@@ -26,11 +27,39 @@ class TimeWindow(BaseModel):
         return self.start < other.end and other.start < self.end
 
 
+_EARTH_RADIUS_MILES = 3958.8
+
+
+class Coordinates(BaseModel):
+    """Kept local to the optimizer contract (not imported from data.models.Location)
+    so the contract stays self-contained, the same way TimeWindow already is."""
+
+    latitude: float
+    longitude: float
+
+    def distance_miles(self, other: Coordinates) -> float:
+        lat1, lon1, lat2, lon2 = (
+            math.radians(v) for v in (self.latitude, self.longitude, other.latitude, other.longitude)
+        )
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        return _EARTH_RADIUS_MILES * 2 * math.asin(math.sqrt(a))
+
+
+class WaitForecastEntry(BaseModel):
+    hour: datetime
+    wait_minutes: float
+
+
 LightningLaneType = Literal["MULTI", "SINGLE", "NONE"]
-NodeKind = Literal["ATTRACTION", "SHOW"]
-PlanAction = Literal["RIDE_STANDBY", "BOOK_LIGHTNING_LANE", "REDEEM_LIGHTNING_LANE", "WATCH_SHOW"]
+NodeKind = Literal["ATTRACTION", "SHOW", "ACTIVITY"]
+PlanAction = Literal[
+    "RIDE_STANDBY", "BOOK_LIGHTNING_LANE", "REDEEM_LIGHTNING_LANE", "WATCH_SHOW", "DO_ACTIVITY"
+]
 Objective = Literal["MAXIMIZE_PRIZE", "ALL_RIDES_CHALLENGE"]
 LightningLaneHoldStatus = Literal["BOOKED", "REDEEMED", "EXPIRED"]
+NavigationStrategy = Literal["TIME_OPTIMAL", "LAND_ORDER", "CLUSTERED"]
 
 
 class Node(BaseModel):
@@ -45,9 +74,23 @@ class Node(BaseModel):
     lightning_lane_window: TimeWindow | None = None
     is_water_ride: bool = False
     reliability_tier: ReliabilityTier = ReliabilityTier.MEDIUM
+    location: Coordinates | None = None
+    land: str | None = None
+    mandatory: bool = False
+    wait_forecast: list[WaitForecastEntry] = []
 
     def is_feasible_at(self, moment: datetime) -> bool:
         return any(window.contains(moment) for window in self.time_windows)
+
+    def wait_minutes_at(self, moment: datetime) -> float:
+        """Forecasted wait for this specific hour if we have it, else the
+        current snapshot -- this is what makes "is this easier at night"
+        reasoning reflect real predicted data instead of a flat all-day
+        assumption."""
+        for entry in self.wait_forecast:
+            if entry.hour.date() == moment.date() and entry.hour.hour == moment.hour:
+                return entry.wait_minutes
+        return self.wait_estimate_minutes
 
 
 class LightningLaneHold(BaseModel):
@@ -68,6 +111,9 @@ class PlanRequest(BaseModel):
     already_visited_ids: set[str] = set()
     water_ride_comfort: WaterRideComfort = WaterRideComfort.MIND_IF_COOL
     hourly_forecast: list[HourlyWeather] = []
+    navigation_strategy: NavigationStrategy = "TIME_OPTIMAL"
+    land_order: list[str] = []
+    walking_pace_mph: float = 2.7
 
 
 class PlanStep(BaseModel):
@@ -93,6 +139,7 @@ class Plan(BaseModel):
     total_prize: float
     solver_name: str
     unscheduled_node_ids: list[str] = []
+    unscheduled_mandatory_node_ids: list[str] = []
     disclaimer: str = PLAN_DISCLAIMER
 
 

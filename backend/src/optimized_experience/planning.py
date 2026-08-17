@@ -7,16 +7,75 @@ parsing.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from optimized_experience.data.models import ChildrenResponse, LiveDataEntry, LiveResponse, ScheduleResponse
-from optimized_experience.data.preferences import DEFAULT_BASE_PRIZE, Preferences
+from optimized_experience.data.lands import LandMap
+from optimized_experience.data.models import ChildEntity, ChildrenResponse, LiveDataEntry, LiveResponse, ScheduleResponse
+from optimized_experience.data.preferences import (
+    DEFAULT_BASE_PRIZE,
+    ActivityBlock,
+    ActivityKind,
+    BlockPlacement,
+    Preferences,
+)
 from optimized_experience.data.reliability import ReliabilityProfile
 from optimized_experience.data.weather_client import HourlyWeather
-from optimized_experience.optimizer.contracts import LightningLaneType, Node, Objective, PlanRequest, TimeWindow
+from optimized_experience.optimizer.contracts import (
+    Coordinates,
+    LightningLaneType,
+    Node,
+    Objective,
+    PlanRequest,
+    TimeWindow,
+    WaitForecastEntry,
+)
+from optimized_experience.optimizer.geography import WALKING_PACE_MPH
 
 # themeparks.wiki does not expose ride/show duration -- this is a documented
 # simplification, not a measured value. See plan notes on data limitations.
 DEFAULT_ATTRACTION_SERVICE_MINUTES = 4.0
+
+PARK_TIMEZONE = ZoneInfo("America/Los_Angeles")
+
+
+def resolve_start_time(
+    schedule: ScheduleResponse,
+    is_replay: bool,
+    planned_arrival: datetime | None = None,
+    now: datetime | None = None,
+) -> datetime:
+    """The moment the plan starts from. A guest-specified planned_arrival is
+    honored but can never be earlier than the park's actual opening (can't
+    enter before it opens). `now` is injectable for testability; defaults to
+    the real current time in the park's timezone."""
+    if is_replay:
+        first_entry = schedule.schedule[0]
+        if first_entry.openingTime is None:
+            raise ValueError("Replay schedule fixture has no opening time for its first entry.")
+        opening = first_entry.openingTime
+        return max(planned_arrival, opening) if planned_arrival is not None else opening
+
+    current = now if now is not None else datetime.now(PARK_TIMEZONE)
+    opening = opening_time_for(schedule, current) or current
+    if planned_arrival is not None:
+        return max(planned_arrival, opening)
+    return opening if current < opening else current
+
+
+# A forcing constant, not a real preference weight: high enough that a
+# mandatory activity block (lunch, dinner, shopping) always wins contention
+# in the score-driven greedy whenever it's feasible. Current max realistic
+# attraction prize is 100.
+MANDATORY_ACTIVITY_PRIZE = 100_000.0
+
+# Default hour-of-day window for SOLVER_CHOICE placement, so a mandatory
+# block's forcing prize doesn't just get grabbed at park open because that's
+# the first opportunity -- without this, "Dinner" could get scheduled at
+# 8am, which defeats the point of naming it dinner. (hour, minute) pairs.
+_SOLVER_CHOICE_DEFAULT_WINDOW: dict[ActivityKind, tuple[tuple[int, int], tuple[int, int]]] = {
+    ActivityKind.LUNCH: ((11, 0), (14, 0)),
+    ActivityKind.DINNER: ((17, 0), (20, 30)),
+}
 
 
 def build_candidate_nodes(
@@ -25,8 +84,10 @@ def build_candidate_nodes(
     preferences: Preferences,
     reliability_profile: ReliabilityProfile,
     objective: Objective,
+    land_map: LandMap | None = None,
 ) -> list[Node]:
-    slug_by_id = {child.id: child.slug for child in children.children}
+    land_map = land_map or LandMap()
+    child_by_id: dict[str, ChildEntity] = {child.id: child for child in children.children}
     nodes: list[Node] = []
 
     for entry in live.liveData:
@@ -35,7 +96,13 @@ def build_candidate_nodes(
         if entry.status != "OPERATING":
             continue
 
-        slug = slug_by_id.get(entry.id)
+        child = child_by_id.get(entry.id)
+        slug = child.slug if child else None
+        location = (
+            Coordinates(latitude=child.location.latitude, longitude=child.location.longitude)
+            if child and child.location
+            else None
+        )
         time_windows = _time_windows_for(entry)
         if not time_windows:
             continue  # no schedulable window (e.g. a show with no announced showtimes)
@@ -49,7 +116,10 @@ def build_candidate_nodes(
                 continue
             base_prize = base_prize if base_prize is not None else DEFAULT_BASE_PRIZE
 
-        lightning_lane_type, lightning_lane_window = _lightning_lane_info(entry)
+        if preferences.use_lightning_lane:
+            lightning_lane_type, lightning_lane_window = _lightning_lane_info(entry)
+        else:
+            lightning_lane_type, lightning_lane_window = "NONE", None
         nodes.append(
             Node(
                 id=entry.id,
@@ -58,11 +128,79 @@ def build_candidate_nodes(
                 base_prize=base_prize,
                 service_time_minutes=_service_time_minutes(entry),
                 wait_estimate_minutes=_wait_minutes(entry),
+                wait_forecast=_wait_forecast_for(entry),
                 time_windows=time_windows,
                 lightning_lane_type=lightning_lane_type,
                 lightning_lane_window=lightning_lane_window,
                 is_water_ride=reliability_profile.is_water_ride(slug, entry.id),
                 reliability_tier=reliability_profile.tier_for(slug, entry.id),
+                location=location,
+                land=land_map.land_for(slug, entry.id),
+            )
+        )
+    return nodes
+
+
+def _solver_choice_window(kind: ActivityKind, day_start: datetime, day_end: datetime) -> TimeWindow:
+    default = _SOLVER_CHOICE_DEFAULT_WINDOW.get(kind)
+    if default is None:
+        return TimeWindow(start=day_start, end=day_end)
+
+    (start_h, start_m), (end_h, end_m) = default
+    window_start = max(day_start, day_start.replace(hour=start_h, minute=start_m, second=0, microsecond=0))
+    window_end = min(day_end, day_start.replace(hour=end_h, minute=end_m, second=0, microsecond=0))
+    if window_start >= window_end:
+        # The default hour range doesn't fit inside today's actual budget (e.g. a
+        # guest leaving before dinner) -- fall back to the whole day rather than
+        # producing an unsatisfiable window for a mandatory block.
+        return TimeWindow(start=day_start, end=day_end)
+    return TimeWindow(start=window_start, end=window_end)
+
+
+def resolve_park_close(
+    schedule: ScheduleResponse, start_time: datetime, planned_departure: datetime | None
+) -> datetime:
+    """The official closing time, tightened by a guest-specified departure if
+    they want to leave earlier -- never extended past the park's real close."""
+    official_close = _closing_time_for(schedule, start_time) or (start_time + timedelta(hours=12))
+    if planned_departure is not None and planned_departure < official_close:
+        return planned_departure
+    return official_close
+
+
+def build_activity_nodes(
+    activity_blocks: list[ActivityBlock], day_start: datetime, day_end: datetime
+) -> list[Node]:
+    """Meal/shopping blocks reuse the exact Node/Solver machinery attractions and
+    shows already use -- a narrow feasibility window plus a forcing prize
+    constant, not a parallel scheduling subsystem. See PLAN_2 notes."""
+    nodes: list[Node] = []
+    for i, block in enumerate(activity_blocks):
+        if block.placement == BlockPlacement.FIXED_TIME:
+            if block.fixed_time is None:
+                raise ValueError(f"Activity block '{block.name}' is FIXED_TIME but has no fixed_time.")
+            window = TimeWindow(
+                start=block.fixed_time, end=block.fixed_time + timedelta(minutes=block.duration_minutes)
+            )
+        elif block.placement == BlockPlacement.PREFERRED_RANGE:
+            if block.range_start is None or block.range_end is None:
+                raise ValueError(
+                    f"Activity block '{block.name}' is PREFERRED_RANGE but missing range_start/range_end."
+                )
+            window = TimeWindow(start=block.range_start, end=block.range_end)
+        else:  # SOLVER_CHOICE
+            window = _solver_choice_window(block.kind, day_start, day_end)
+
+        nodes.append(
+            Node(
+                id=f"activity-{i}-{block.name}",
+                name=block.name,
+                kind="ACTIVITY",
+                base_prize=MANDATORY_ACTIVITY_PRIZE if block.mandatory else DEFAULT_BASE_PRIZE,
+                service_time_minutes=block.duration_minutes,
+                wait_estimate_minutes=0.0,
+                time_windows=[window],
+                mandatory=block.mandatory,
             )
         )
     return nodes
@@ -71,13 +209,12 @@ def build_candidate_nodes(
 def build_plan_request(
     objective: Objective,
     start_time: datetime,
-    schedule: ScheduleResponse,
+    park_close: datetime,
     candidate_nodes: list[Node],
     hourly_forecast: list[HourlyWeather],
     preferences: Preferences,
     max_budget_minutes: float | None = None,
 ) -> PlanRequest:
-    park_close = _closing_time_for(schedule, start_time) or (start_time + timedelta(hours=12))
     budget_minutes = (park_close - start_time).total_seconds() / 60.0
     if max_budget_minutes is not None:
         budget_minutes = min(budget_minutes, max_budget_minutes)
@@ -90,6 +227,16 @@ def build_plan_request(
         candidate_nodes=candidate_nodes,
         water_ride_comfort=preferences.water_ride_comfort,
         hourly_forecast=hourly_forecast,
+        # getattr(x, "value", x), not str(x) or x.value alone: preferences.model_copy
+        # (used by the CLI's --navigation override) sets a raw str, not a
+        # re-validated Enum member, so .value would crash on that path -- and
+        # str(SomeStrEnum.MEMBER) is the classic gotcha that returns
+        # "ClassName.MEMBER", not the plain value, even though it's a str subclass.
+        navigation_strategy=getattr(preferences.navigation_strategy, "value", preferences.navigation_strategy),
+        land_order=preferences.land_order,
+        walking_pace_mph=WALKING_PACE_MPH[
+            getattr(preferences.walking_pace, "value", preferences.walking_pace)
+        ],
     )
 
 
@@ -111,6 +258,14 @@ def _wait_minutes(entry: LiveDataEntry) -> float:
     if entry.queue and entry.queue.STANDBY and entry.queue.STANDBY.waitTime is not None:
         return float(entry.queue.STANDBY.waitTime)
     return 0.0
+
+
+def _wait_forecast_for(entry: LiveDataEntry) -> list[WaitForecastEntry]:
+    return [
+        WaitForecastEntry(hour=f.time, wait_minutes=float(f.waitTime))
+        for f in entry.forecast
+        if f.waitTime is not None
+    ]
 
 
 def _lightning_lane_info(entry: LiveDataEntry) -> tuple[LightningLaneType, TimeWindow | None]:
