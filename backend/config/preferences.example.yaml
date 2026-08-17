@@ -27,3 +27,57 @@ tiers:
   autopia: SKIP
   mainstreetvehicles: SKIP
   disneylandmonorail: SKIP
+
+# When you actually plan to enter/leave, if different from official park hours.
+# Both optional. Arrival can never be earlier than the park's real opening;
+# departure can never be later than the park's real closing -- these only ever
+# tighten the day's budget, never extend it.
+# planned_arrival: "2026-08-16T10:30:00-07:00"
+# planned_departure: "2026-08-16T20:00:00-07:00"
+
+# Set false to plan the whole day without Lightning Lane, regardless of what's
+# available live. Reloaded every tick under --watch, so you can flip this
+# mid-day (edit the file, it takes effect on the next re-plan) without
+# restarting.
+use_lightning_lane: true
+
+# Meal/shopping blocks. Each gets one of three placement styles:
+#   PREFERRED_RANGE  - give range_start/range_end; the solver finds the best slot inside it
+#   FIXED_TIME       - give fixed_time; hard-blocked exactly there, like a reservation
+#   SOLVER_CHOICE    - give neither; the solver fits it in somewhere that day
+# All are mandatory by default (missing one is reported loudly, not silently
+# dropped, in unscheduled_mandatory_node_ids). Declare multiple shopping
+# blocks (e.g. one morning, one at night) as two separate entries here.
+activity_blocks:
+  - name: Lunch
+    duration_minutes: 45
+    placement: PREFERRED_RANGE
+    range_start: "2026-08-16T12:00:00-07:00"
+    range_end: "2026-08-16T13:30:00-07:00"
+  - name: Dinner
+    kind: DINNER  # only affects SOLVER_CHOICE: defaults to a 5-8:30pm window, not "any time"
+    duration_minutes: 60
+    placement: SOLVER_CHOICE
+  # - name: Shopping (evening)
+  #   duration_minutes: 30
+  #   placement: FIXED_TIME
+  #   fixed_time: "2026-08-16T20:00:00-07:00"
+
+# How fast you walk between attractions -- affects real walking-time estimates
+# computed from each attraction's actual coordinates (SLOW/AVERAGE/FAST).
+walking_pace: AVERAGE
+
+# How to move between lands (Fantasyland, Galaxy's Edge, etc.):
+#   TIME_OPTIMAL  - no land grouping, purely by score/deadline (real walk-time still counted)
+#   LAND_ORDER    - visit lands in the exact order given below, land_order required
+#   CLUSTERED     - no hard order, but switching lands costs an extra time penalty,
+#                   biasing the plan to stay geographically clustered
+# Use `--navigation compare` on the CLI to solve and print all three side by side.
+navigation_strategy: TIME_OPTIMAL
+
+# Only used when navigation_strategy is LAND_ORDER. See config/land_map.example.yaml
+# for the full list of Disneyland's 9 lands.
+# land_order:
+#   - Fantasyland
+#   - "Star Wars: Galaxy's Edge"
+#   - Tomorrowland

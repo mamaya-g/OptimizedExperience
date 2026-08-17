@@ -1,0 +1,80 @@
+# Copy to land_map.yaml (gitignored) if you want to adjust it.
+#
+# Hand-seeded from public knowledge of Disneyland Park's layout -- same
+# best-effort, refinable pattern as reliability_profile.yaml. No API exposes
+# land groupings. Keyed by slug where available, entity id otherwise (a few
+# newer/generic attractions lack a slug in the API). Anything left out falls
+# back to land=None, treated as "any land" everywhere downstream so a gap
+# here never hard-blocks scheduling (see optimizer/navigation.py).
+lands:
+  # Main Street U.S.A.
+  mainstreetcinema: Main Street U.S.A.
+  mainstreetvehicles: Main Street U.S.A.
+  disneylandrailroad: Main Street U.S.A.
+  thedisneygallery: Main Street U.S.A.
+  thedisneylandstorypresentinggreatmomentswithmrlincoln: Main Street U.S.A.
+  11209961-2ac2-4f76-a11b-ed793939f796: Main Street U.S.A. # Key to Disneyland
+  6e2af074-3a67-4f38-9bcf-2f5a572c87df: Main Street U.S.A. # Opera House
+  05b17c11-fd4c-4b85-ab45-3e269dc56559: Main Street U.S.A. # Walt Disney - A Magical Life
+  526ada11-4688-442b-96d4-4077eac4f988: Main Street U.S.A. # Pixar Short Film Spotlight
+
+  # Adventureland
+  junglecruise: Adventureland
+  waltdisneysenchantedtikiroom: Adventureland
+  indianajonesadventure: Adventureland
+  fortunetellers: Adventureland
+  e27b1db8-9ec9-4f8b-9ca6-fd6377de66ee: Adventureland # Adventureland Treehouse
+
+  # New Orleans Square
+  piratesofthecaribbean: New Orleans Square
+  hauntedmansion: New Orleans Square
+
+  # Bayou Country (formerly Critter Country)
+  a9076acd-7630-4bad-a8da-e6bd689ddcac: Bayou Country # Tiana's Bayou Adventure
+
+  # Frontierland
+  bigthundermountainrailroad: Frontierland
+  marktwainriverboat: Frontierland
+  sailingshipcolumbia: Frontierland
+  pirateslairontomsawyerisland: Frontierland
+  frontierlandshootinexposition: Frontierland
+  davycrockettsexplorercanoes: Frontierland
+
+  # Fantasyland
+  itsasmallworld: Fantasyland
+  peterpansflight: Fantasyland
+  snowwhitesenchantedwish: Fantasyland
+  pinocchiosdaringjourney: Fantasyland
+  mrtoadswildride: Fantasyland
+  aliceinwonderland: Fantasyland
+  madteaparty: Fantasyland
+  kingarthurcarrousel: Fantasyland
+  dumbotheflyingelephant: Fantasyland
+  storybooklandcanalboats: Fantasyland
+  caseyjrcircustrain: Fantasyland
+  sleepingbeautycastlewalkthrough: Fantasyland
+  matterhornbobsleds: Fantasyland
+  themanyadventuresofwinniethepooh: Fantasyland
+  888525b0-5a6f-4b8e-9f07-b6a32812b04d: Fantasyland # Bluey's Best Day Ever
+
+  # Mickey's Toontown
+  gadgetsgocoaster: Mickey's Toontown
+  rogerrabbitscartoonspin: Mickey's Toontown
+  mickeyshouseandmeetmickey: Mickey's Toontown
+  minnieshouse: Mickey's Toontown
+  goofysplayhouse: Mickey's Toontown
+  donaldsboat: Mickey's Toontown
+  cd670bff-81d1-4f34-8676-7bafdf49220a: Mickey's Toontown # Mickey & Minnie's Runaway Railway
+
+  # Tomorrowland
+  autopia: Tomorrowland
+  astroorbitor: Tomorrowland
+  buzzlightyearastroblasters: Tomorrowland
+  startourstheadventurescontinue: Tomorrowland
+  spacemountain: Tomorrowland
+  disneylandmonorail: Tomorrowland
+  findingnemosubmarinevoyage: Tomorrowland
+
+  # Star Wars: Galaxy's Edge
+  starwarsriseoftheresistance: "Star Wars: Galaxy's Edge"
+  millenniumfalconsmugglersrun: "Star Wars: Galaxy's Edge"

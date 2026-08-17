@@ -5,4 +5,5 @@ __pycache__/
 .pytest_cache/
 config/preferences.yaml
 config/reliability_profile.yaml
+config/land_map.yaml
 status_log.csv

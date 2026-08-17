@@ -10,9 +10,13 @@ algorithm choice, AI Council review) lives in
 `/Users/decipherer/.claude/plans/graceful-watching-toast.md`; day-to-day usage lives in
 `README.md`.
 
-**Phase 1 (current):** Python backend only -- live data + greedy solver + CLI. No UI yet.
-Phase 2 (OR-Tools solver) and Phase 3 (Next.js UI) are not started -- re-plan those in
-detail only once the prior phase is working; don't jump ahead.
+**Phase 1 + Plan 2 (current):** Python backend only -- live data + greedy solvers + CLI.
+No UI yet. Plan 2 added: an optional Lightning Lane toggle, mandatory meal/shopping
+blocks, a guest entry/exit window, real walking time under three navigation strategies
+(time-optimal / land-order / clustered), and hourly wait-time forecasting. An OR-Tools
+solver and a Next.js UI are not started -- re-plan those in detail only once the prior
+work is solid; don't jump ahead. Indoor/outdoor queue scoring is explicitly deferred (no
+reliable public data source) -- see README.md.
 
 ## Commands
 
@@ -42,24 +46,41 @@ commands with `PYTHONPATH=src` as shown above -- pytest already does this via
 - `backend/src/optimized_experience/data/` -- external data access: `client.py`
   (themeparks.wiki, real + fixture-replay implementations behind a `DataSource`
   Protocol), `weather_client.py` (api.weather.gov, same real/replay split),
-  `preferences.py` and `reliability.py` (hand-authored YAML config loaders).
+  `preferences.py` (guest tiers + all Plan-2 day-level settings: Lightning Lane
+  toggle, walking pace, navigation strategy, arrival/departure, activity blocks),
+  `reliability.py` and `lands.py` (both hand-authored YAML config loaders, same
+  pattern: qualitative data no API exposes, refinable over time).
 - `backend/src/optimized_experience/optimizer/` -- the solver layer, all built against
-  one shared contract (`contracts.py`: `Node`, `PlanRequest`, `Plan`, `Solver` Protocol)
-  so solvers are interchangeable via `factory.py`'s `get_solver()`. `greedy.py` and
-  `greedy_challenge.py` are today's two solvers (`MAXIMIZE_PRIZE` and
-  `ALL_RIDES_CHALLENGE` objectives, respectively); `lightning_lane.py` holds the
-  Lightning Lane Multi Pass capacity-1 resource state machine shared by both, so it
-  isn't duplicated per solver. `scoring.py` computes `effective_prize()`, the single
-  mechanism behind both ride-breakdown-risk and water-ride weather-comfort adjustments
-  (an hour-dependent multiplier on a node's base prize).
+  one shared contract (`contracts.py`: `Node`, `PlanRequest`, `Plan`, `Solver` Protocol,
+  `Coordinates` with a haversine `distance_miles()`) so solvers are interchangeable via
+  `factory.py`'s `get_solver()`. `greedy.py` and `greedy_challenge.py` are today's two
+  solvers (`MAXIMIZE_PRIZE` and `ALL_RIDES_CHALLENGE` objectives, respectively); both
+  thread a `_NavState` (current location/land, and under `LAND_ORDER` the land the
+  solver is currently restricted to) through their solve loop. `lightning_lane.py` and
+  `navigation.py` hold logic shared by both solvers (LL capacity-1 resource state
+  machine; land-order eligibility + clustered land-switch penalty) so it isn't
+  duplicated per solver. `geography.py` has the walking-pace-to-minutes conversion.
+  `scoring.py` computes `effective_prize()`, the single mechanism behind both
+  ride-breakdown-risk and water-ride weather-comfort adjustments (an hour-dependent
+  multiplier on a node's base prize) -- `Node.wait_minutes_at()` is the analogous
+  mechanism for hourly wait-time forecasting.
 - `backend/src/optimized_experience/planning.py` -- bridges the data layer into the
-  optimizer contract (raw API responses + preferences + reliability profile ->
-  candidate `Node`s -> `PlanRequest`). Kept separate from `cli.py` so this orchestration
-  is testable without going through argument parsing.
+  optimizer contract (raw API responses + preferences + reliability profile + land map
+  -> candidate `Node`s -> `PlanRequest`). Kept separate from `cli.py` so this
+  orchestration is testable without going through argument parsing. Meal/shopping
+  blocks (`build_activity_nodes()`) are modeled as mandatory `ACTIVITY`-kind `Node`s
+  reusing the exact scheduling path shows already use (narrow feasibility window + a
+  forcing prize constant), not a parallel subsystem -- see `MANDATORY_ACTIVITY_PRIZE`
+  and `_SOLVER_CHOICE_DEFAULT_WINDOW` (the latter exists because a mandatory block's
+  forcing prize would otherwise get grabbed at park open just because that's the first
+  opportunity, which is wrong for something named "Dinner").
 - `backend/src/optimized_experience/cli.py` -- entrypoint; owns argument parsing, the
-  `--watch` rolling re-plan loop (full recompute per tick, not incremental patching),
-  and printing. `scripts/demo_plan.py` and `scripts/collect_status_log.py` both import
-  from here rather than duplicating orchestration logic.
+  `--watch` rolling re-plan loop (full recompute per tick, not incremental patching --
+  reloads `preferences.yaml`/`reliability_profile.yaml` every tick so mid-day edits take
+  effect without restarting), `--navigation compare` (solves the same day under all
+  three navigation strategies and prints all three), and printing. `scripts/demo_plan.py`
+  and `scripts/collect_status_log.py` both import from here rather than duplicating
+  orchestration logic.
 - Tests are offline and deterministic: `tests/fixtures/disneyland_aug16/` holds real
   recorded API responses (children/live/schedule/weather) for `ReplayDataSource` /
   `ReplayWeatherSource` to serve, so nothing requires a live park visit or network
