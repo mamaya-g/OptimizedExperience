@@ -132,6 +132,14 @@ class PlanStep(BaseModel):
     # needs the actual numbers (wait time, ride length), not just prose.
     wait_minutes: float
     service_minutes: float
+    # Plain-language, guest-facing "why is this here" -- distinct from
+    # `rationale` above, which is solver-internal prose (mentions OR-Tools/
+    # greedy by name) meant for a curious "how this is planned" panel, not the
+    # primary UI. Filled in by optimizer/rationale.py as a post-processing
+    # pass over the solved Plan, not by the solvers themselves, so it stays
+    # identical regardless of which solver produced the plan. Empty until
+    # that pass runs.
+    guest_rationale: str = ""
 
 
 PLAN_DISCLAIMER = (

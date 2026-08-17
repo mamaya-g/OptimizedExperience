@@ -3,6 +3,7 @@ import { DEFAULT_PREFERENCES, type Objective, type Preferences } from "./types";
 const PREFERENCES_KEY = "oe:preferences";
 const ONBOARDED_KEY = "oe:onboarded";
 const OBJECTIVE_KEY = "oe:objective";
+const COMPLETED_STEPS_KEY = "oe:completed_steps";
 
 export function loadPreferences(): Preferences {
   if (typeof window === "undefined") return DEFAULT_PREFERENCES;
@@ -35,4 +36,19 @@ export function loadObjective(): Objective {
 export function saveObjective(objective: Objective): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(OBJECTIVE_KEY, objective);
+}
+
+export function loadCompletedStepIds(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(COMPLETED_STEPS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCompletedStepIds(ids: string[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(COMPLETED_STEPS_KEY, JSON.stringify(ids));
 }

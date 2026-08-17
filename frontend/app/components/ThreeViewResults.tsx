@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { planStepsToManualItems } from "../lib/manualSchedule";
 import { nudgePreferencesFromManualEdits, scheduleableStepIds } from "../lib/nudge";
+import { loadCompletedStepIds, saveCompletedStepIds } from "../lib/storage";
 import type { AttractionListing, Plan, Preferences } from "../lib/types";
 import { ManualScheduleView } from "./ManualScheduleView";
 import { StepCard } from "./StepCard";
@@ -161,12 +162,25 @@ function OptimizedView({
     (id) => attractionsById.get(id)?.name ?? id,
   );
 
+  const [completed, setCompleted] = useState<Set<string>>(() => new Set(loadCompletedStepIds()));
+
+  function toggleDone(nodeId: string) {
+    setCompleted((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      saveCompletedStepIds([...next]);
+      return next;
+    });
+  }
+
   return (
     <>
-      <p className="mb-4 text-xs text-white/40">
+      <p className="mb-1 text-xs text-white/40">
         Updated {new Date(generatedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
         {refreshing && " · refreshing…"}
       </p>
+      <p className="mb-4 text-xs text-white/30">Tap anything you&apos;ve already done to check it off.</p>
 
       {unscheduledMandatory.length > 0 && (
         <div className="mb-6 rounded-xl border border-rose-400/40 bg-rose-500/10 px-5 py-3 text-sm text-rose-100">
@@ -187,6 +201,9 @@ function OptimizedView({
               action={step.action}
               waitMinutes={step.wait_minutes}
               durationMinutes={step.service_minutes}
+              rationale={step.guest_rationale}
+              done={completed.has(step.node_id)}
+              onToggleDone={() => toggleDone(step.node_id)}
             />
           ))}
         </ol>

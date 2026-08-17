@@ -22,6 +22,7 @@ from optimized_experience.data.shows import ShowCategoryMap, load_show_category_
 from optimized_experience.data.weather_client import NWSWeatherSource, ReplayWeatherSource, WeatherSource
 from optimized_experience.optimizer.contracts import NavigationStrategy, Objective, Plan
 from optimized_experience.optimizer.factory import SolverName, get_solver
+from optimized_experience.optimizer.rationale import annotate_guest_rationale
 from optimized_experience.planning import (
     build_activity_nodes,
     build_candidate_nodes,
@@ -159,6 +160,7 @@ def generate_plan(
         objective, start_time, park_close, candidate_nodes, hourly_forecast, preferences
     )
     plan = get_solver(objective, solver_name).solve(plan_request)
+    plan = annotate_guest_rationale(plan, plan_request)
     return plan, start_time
 
 

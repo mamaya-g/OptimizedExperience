@@ -54,6 +54,7 @@ class ActivityKind(str, Enum):
 
     LUNCH = "LUNCH"
     DINNER = "DINNER"
+    SNACK = "SNACK"
     SHOPPING = "SHOPPING"
     OTHER = "OTHER"
 

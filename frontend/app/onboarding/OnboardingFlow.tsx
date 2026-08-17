@@ -37,6 +37,13 @@ function timeFromIso(iso: string | null): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+function formatBoundLabel(time: string): string {
+  const [hours, minutes] = time.split(":").map(Number);
+  const d = new Date();
+  d.setHours(hours, minutes, 0, 0);
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 function findBlock(blocks: ActivityBlock[], kind: ActivityKind): ActivityBlock | undefined {
   return blocks.find((b) => b.kind === kind);
 }
@@ -236,6 +243,8 @@ function MealsAndShopping({
         kind="LUNCH"
         title="Lunch"
         defaultDuration={45}
+        bounds={["11:00", "15:00"]}
+        defaultRange={["12:00", "12:45"]}
         preferences={preferences}
         setPreferences={setPreferences}
       />
@@ -243,6 +252,16 @@ function MealsAndShopping({
         kind="DINNER"
         title="Dinner"
         defaultDuration={60}
+        bounds={["17:00", "23:00"]}
+        defaultRange={["18:00", "19:00"]}
+        preferences={preferences}
+        setPreferences={setPreferences}
+      />
+      <MealBlockEditor
+        kind="SNACK"
+        title="Snack break"
+        defaultDuration={15}
+        defaultRange={["15:00", "15:15"]}
         preferences={preferences}
         setPreferences={setPreferences}
       />
@@ -250,6 +269,7 @@ function MealsAndShopping({
         kind="SHOPPING"
         title="Shopping time"
         defaultDuration={30}
+        defaultRange={["12:00", "12:30"]}
         preferences={preferences}
         setPreferences={setPreferences}
       />
@@ -261,12 +281,19 @@ function MealBlockEditor({
   kind,
   title,
   defaultDuration,
+  bounds,
+  defaultRange,
   preferences,
   setPreferences,
 }: {
   kind: ActivityKind;
   title: string;
   defaultDuration: number;
+  // [min, max] time-of-day this block can be placed at, enforced both as an
+  // <input type="time"> constraint here and as a hard clamp server-side --
+  // e.g. lunch can't land at 9pm just because that's what got typed in.
+  bounds?: [string, string];
+  defaultRange: [string, string];
   preferences: Preferences;
   setPreferences: React.Dispatch<React.SetStateAction<Preferences>>;
 }) {
@@ -321,28 +348,39 @@ function MealBlockEditor({
               onChange={() =>
                 update({
                   placement: "PREFERRED_RANGE",
-                  range_start: combineTodayWithTime("12:00"),
-                  range_end: combineTodayWithTime("13:30"),
+                  range_start: combineTodayWithTime(defaultRange[0]),
+                  range_end: combineTodayWithTime(defaultRange[1]),
                 })
               }
             />
             Around a specific time
           </label>
           {hasSpecificTime && (
-            <div className="ml-6 flex items-center gap-2 text-sm">
-              <input
-                type="time"
-                value={timeFromIso(block!.range_start)}
-                onChange={(e) => update({ range_start: combineTodayWithTime(e.target.value) })}
-                className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
-              />
-              <span className="text-white/40">to</span>
-              <input
-                type="time"
-                value={timeFromIso(block!.range_end)}
-                onChange={(e) => update({ range_end: combineTodayWithTime(e.target.value) })}
-                className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
-              />
+            <div className="ml-6 flex flex-col gap-1">
+              <div className="flex items-center gap-2 text-sm">
+                <input
+                  type="time"
+                  value={timeFromIso(block!.range_start)}
+                  min={bounds?.[0]}
+                  max={bounds?.[1]}
+                  onChange={(e) => update({ range_start: combineTodayWithTime(e.target.value) })}
+                  className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
+                />
+                <span className="text-white/40">to</span>
+                <input
+                  type="time"
+                  value={timeFromIso(block!.range_end)}
+                  min={bounds?.[0]}
+                  max={bounds?.[1]}
+                  onChange={(e) => update({ range_end: combineTodayWithTime(e.target.value) })}
+                  className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
+                />
+              </div>
+              {bounds && (
+                <p className="text-xs text-white/40">
+                  Kept between {formatBoundLabel(bounds[0])} and {formatBoundLabel(bounds[1])}.
+                </p>
+              )}
             </div>
           )}
         </div>

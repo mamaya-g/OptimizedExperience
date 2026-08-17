@@ -121,14 +121,14 @@ def test_build_activity_nodes_solver_choice_dinner_defaults_to_evening_not_park_
     nodes = build_activity_nodes([block], DAY_START, DAY_END)
     window = nodes[0].time_windows[0]
     assert window.start == datetime(2026, 8, 16, 17, 0)
-    assert window.end == datetime(2026, 8, 16, 20, 30)
+    assert window.end == DAY_END  # dinner bound (5-11pm) capped by park close (10pm)
     assert window.start > DAY_START  # not park open
 
 
 def test_build_activity_nodes_solver_choice_falls_back_when_default_window_infeasible():
     from optimized_experience.data.preferences import ActivityKind
 
-    # Guest leaves at 3pm -- the default dinner window (5-8:30pm) can't fit.
+    # Guest leaves at 3pm -- the default dinner window (5-11pm) can't fit.
     early_day_end = datetime(2026, 8, 16, 15, 0)
     block = ActivityBlock(
         name="Dinner", duration_minutes=60, placement=BlockPlacement.SOLVER_CHOICE, kind=ActivityKind.DINNER
@@ -137,6 +137,63 @@ def test_build_activity_nodes_solver_choice_falls_back_when_default_window_infea
     window = nodes[0].time_windows[0]
     assert window.start == DAY_START
     assert window.end == early_day_end
+
+
+def test_build_activity_nodes_clamps_preferred_range_lunch_outside_allowed_hours():
+    # A guest requesting "lunch" at 9-10am (outside the 11am-3pm bound) gets
+    # clamped into the allowed window rather than honored literally.
+    from optimized_experience.data.preferences import ActivityKind
+
+    block = ActivityBlock(
+        name="Lunch", duration_minutes=45, placement=BlockPlacement.PREFERRED_RANGE, kind=ActivityKind.LUNCH,
+        range_start=datetime(2026, 8, 16, 9, 0), range_end=datetime(2026, 8, 16, 10, 0),
+    )
+    nodes = build_activity_nodes([block], DAY_START, DAY_END)
+    window = nodes[0].time_windows[0]
+    assert window.start == datetime(2026, 8, 16, 11, 0)
+    assert window.end == datetime(2026, 8, 16, 15, 0)
+
+
+def test_build_activity_nodes_clamps_fixed_time_dinner_outside_allowed_hours():
+    # A dinner reservation fixed at 2am gets clamped into the 5-11pm bound.
+    from optimized_experience.data.preferences import ActivityKind
+
+    block = ActivityBlock(
+        name="Dinner", duration_minutes=60, placement=BlockPlacement.FIXED_TIME, kind=ActivityKind.DINNER,
+        fixed_time=datetime(2026, 8, 16, 2, 0),
+    )
+    nodes = build_activity_nodes([block], DAY_START, DAY_END)
+    window = nodes[0].time_windows[0]
+    assert window.start == datetime(2026, 8, 16, 17, 0)
+    assert window.end == DAY_END
+
+
+def test_build_activity_nodes_partially_overlapping_preferred_range_lunch_is_tightened_not_replaced():
+    # A guest range that partially overlaps the bound (10:30-11:30) should be
+    # tightened to the overlap, not blown away entirely.
+    from optimized_experience.data.preferences import ActivityKind
+
+    block = ActivityBlock(
+        name="Lunch", duration_minutes=45, placement=BlockPlacement.PREFERRED_RANGE, kind=ActivityKind.LUNCH,
+        range_start=datetime(2026, 8, 16, 10, 30), range_end=datetime(2026, 8, 16, 11, 30),
+    )
+    nodes = build_activity_nodes([block], DAY_START, DAY_END)
+    window = nodes[0].time_windows[0]
+    assert window.start == datetime(2026, 8, 16, 11, 0)
+    assert window.end == datetime(2026, 8, 16, 11, 30)
+
+
+def test_build_activity_nodes_snack_is_unconstrained_by_meal_hours():
+    from optimized_experience.data.preferences import ActivityKind
+
+    block = ActivityBlock(
+        name="Snack", duration_minutes=15, placement=BlockPlacement.PREFERRED_RANGE, kind=ActivityKind.SNACK,
+        range_start=datetime(2026, 8, 16, 9, 0), range_end=datetime(2026, 8, 16, 9, 15),
+    )
+    nodes = build_activity_nodes([block], DAY_START, DAY_END)
+    window = nodes[0].time_windows[0]
+    assert window.start == datetime(2026, 8, 16, 9, 0)
+    assert window.end == datetime(2026, 8, 16, 9, 15)
 
 
 def test_resolve_park_close_earlier_departure_tightens_budget():

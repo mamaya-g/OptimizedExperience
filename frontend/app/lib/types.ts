@@ -14,6 +14,7 @@ export interface PlanStep {
   rationale: string;
   wait_minutes: number;
   service_minutes: number;
+  guest_rationale: string;
 }
 
 export interface Plan {
@@ -73,7 +74,7 @@ export type WaterRideComfort = "MIND_IF_COOL" | "DONT_MIND" | "PREFER_AFTERNOON"
 export type WalkingPace = "SLOW" | "AVERAGE" | "FAST";
 export type NavigationStrategy = "TIME_OPTIMAL" | "LAND_ORDER" | "CLUSTERED";
 export type BlockPlacement = "PREFERRED_RANGE" | "FIXED_TIME" | "SOLVER_CHOICE";
-export type ActivityKind = "LUNCH" | "DINNER" | "SHOPPING" | "OTHER";
+export type ActivityKind = "LUNCH" | "DINNER" | "SNACK" | "SHOPPING" | "OTHER";
 
 export interface ActivityBlock {
   name: string;

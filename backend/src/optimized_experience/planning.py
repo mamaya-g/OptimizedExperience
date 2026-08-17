@@ -73,13 +73,17 @@ def resolve_start_time(
 # attraction prize is 100.
 MANDATORY_ACTIVITY_PRIZE = 100_000.0
 
-# Default hour-of-day window for SOLVER_CHOICE placement, so a mandatory
-# block's forcing prize doesn't just get grabbed at park open because that's
-# the first opportunity -- without this, "Dinner" could get scheduled at
-# 8am, which defeats the point of naming it dinner. (hour, minute) pairs.
-_SOLVER_CHOICE_DEFAULT_WINDOW: dict[ActivityKind, tuple[tuple[int, int], tuple[int, int]]] = {
-    ActivityKind.LUNCH: ((11, 0), (14, 0)),
-    ActivityKind.DINNER: ((17, 0), (20, 30)),
+# Hard hour-of-day bounds for lunch/dinner, (hour, minute) pairs. Used two
+# ways: as the SOLVER_CHOICE default window, so a mandatory block's forcing
+# prize doesn't just get grabbed at park open because that's the first
+# opportunity -- without this, "Dinner" could get scheduled at 8am, which
+# defeats the point of naming it dinner -- and as a hard clamp on
+# FIXED_TIME/PREFERRED_RANGE placements too, so a guest can't (accidentally
+# or otherwise) schedule "lunch" at 9pm. Snack/shopping/other stay
+# unconstrained -- there's no "wrong" time for those.
+_MEAL_HOUR_BOUNDS: dict[ActivityKind, tuple[tuple[int, int], tuple[int, int]]] = {
+    ActivityKind.LUNCH: ((11, 0), (15, 0)),
+    ActivityKind.DINNER: ((17, 0), (23, 0)),
 }
 
 
@@ -266,7 +270,7 @@ def build_listing_nodes(
 
 
 def _solver_choice_window(kind: ActivityKind, day_start: datetime, day_end: datetime) -> TimeWindow:
-    default = _SOLVER_CHOICE_DEFAULT_WINDOW.get(kind)
+    default = _MEAL_HOUR_BOUNDS.get(kind)
     if default is None:
         return TimeWindow(start=day_start, end=day_end)
 
@@ -279,6 +283,33 @@ def _solver_choice_window(kind: ActivityKind, day_start: datetime, day_end: date
         # producing an unsatisfiable window for a mandatory block.
         return TimeWindow(start=day_start, end=day_end)
     return TimeWindow(start=window_start, end=window_end)
+
+
+def _clamp_to_meal_bounds(
+    kind: ActivityKind, window: TimeWindow, day_start: datetime, day_end: datetime
+) -> TimeWindow:
+    """Hard-clamps a guest-specified FIXED_TIME/PREFERRED_RANGE window to
+    _MEAL_HOUR_BOUNDS -- lunch can't land at 9pm just because that's what a
+    guest typed in. Also clamped against today's actual budget (day_start/
+    day_end), same as _solver_choice_window, so a dinner bound extending past
+    closing doesn't produce an unschedulable window. If the requested window
+    doesn't overlap what's actually available at all, falls back to the full
+    available range rather than a zero-width window."""
+    bounds = _MEAL_HOUR_BOUNDS.get(kind)
+    if bounds is None:
+        return window
+
+    (start_h, start_m), (end_h, end_m) = bounds
+    bound_start = max(day_start, day_start.replace(hour=start_h, minute=start_m, second=0, microsecond=0))
+    bound_end = min(day_end, day_start.replace(hour=end_h, minute=end_m, second=0, microsecond=0))
+    if bound_start >= bound_end:
+        bound_start, bound_end = day_start, day_end
+
+    clamped_start = max(window.start, bound_start)
+    clamped_end = min(window.end, bound_end)
+    if clamped_start >= clamped_end:
+        return TimeWindow(start=bound_start, end=bound_end)
+    return TimeWindow(start=clamped_start, end=clamped_end)
 
 
 def resolve_park_close(
@@ -306,12 +337,15 @@ def build_activity_nodes(
             window = TimeWindow(
                 start=block.fixed_time, end=block.fixed_time + timedelta(minutes=block.duration_minutes)
             )
+            window = _clamp_to_meal_bounds(block.kind, window, day_start, day_end)
         elif block.placement == BlockPlacement.PREFERRED_RANGE:
             if block.range_start is None or block.range_end is None:
                 raise ValueError(
                     f"Activity block '{block.name}' is PREFERRED_RANGE but missing range_start/range_end."
                 )
-            window = TimeWindow(start=block.range_start, end=block.range_end)
+            window = _clamp_to_meal_bounds(
+                block.kind, TimeWindow(start=block.range_start, end=block.range_end), day_start, day_end
+            )
         else:  # SOLVER_CHOICE
             window = _solver_choice_window(block.kind, day_start, day_end)
 
