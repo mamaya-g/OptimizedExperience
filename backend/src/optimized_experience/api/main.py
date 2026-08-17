@@ -101,6 +101,11 @@ class AttractionListing(BaseModel):
     lightning_lane_type: LightningLaneType
     lightning_lane_window: TimeWindow | None
     lightning_lane_price: PriceInfo | None
+    # For kind == "SHOW": the specific showtimes it actually runs at (a parade
+    # doesn't run continuously) -- lets the frontend's manual-schedule view flag
+    # a slot that falls outside any of them. For kind == "ATTRACTION" this is
+    # just wide operating hours, not meaningfully constraining.
+    time_windows: list[TimeWindow]
 
 
 class AttractionsResponse(BaseModel):
@@ -171,6 +176,7 @@ def get_attractions() -> AttractionsResponse:
             lightning_lane_type=node.lightning_lane_type,
             lightning_lane_window=node.lightning_lane_window,
             lightning_lane_price=node.lightning_lane_price,
+            time_windows=node.time_windows,
         )
         for node in nodes
     ]

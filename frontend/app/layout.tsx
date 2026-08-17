@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Optimized Experience",
-  description: "A live, algorithm-planned Disneyland itinerary.",
+  description: "A companion for planning your day at Disneyland, built around your preferences and live wait times.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
