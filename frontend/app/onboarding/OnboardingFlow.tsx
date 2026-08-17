@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { fetchAttractions } from "../lib/api";
+import { isoToParkTime, parkTimeToday } from "../lib/parkTime";
 import type {
   ActivityBlock,
   ActivityKind,
@@ -23,19 +24,6 @@ const STEPS = [
   "Walking pace",
   "Arrival & departure",
 ] as const;
-
-function combineTodayWithTime(time: string): string {
-  const [hours, minutes] = time.split(":").map(Number);
-  const d = new Date();
-  d.setHours(hours, minutes, 0, 0);
-  return d.toISOString();
-}
-
-function timeFromIso(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
 
 function formatBoundLabel(time: string): string {
   const [hours, minutes] = time.split(":").map(Number);
@@ -150,7 +138,7 @@ export function OnboardingFlow({
         {stepIndex === 1 && <MealsAndShopping preferences={preferences} setPreferences={setPreferences} />}
 
         {stepIndex === 2 && (
-          <ParadesAndShows preferences={preferences} setPreferences={setPreferences} attractions={attractions ?? []} />
+          <ParadesAndShows preferences={preferences} onChangeTier={setTier} attractions={attractions ?? []} />
         )}
 
         {stepIndex === 3 && <WaterRideStep preferences={preferences} setPreferences={setPreferences} />}
@@ -348,8 +336,8 @@ function MealBlockEditor({
               onChange={() =>
                 update({
                   placement: "PREFERRED_RANGE",
-                  range_start: combineTodayWithTime(defaultRange[0]),
-                  range_end: combineTodayWithTime(defaultRange[1]),
+                  range_start: parkTimeToday(defaultRange[0]),
+                  range_end: parkTimeToday(defaultRange[1]),
                 })
               }
             />
@@ -360,19 +348,19 @@ function MealBlockEditor({
               <div className="flex items-center gap-2 text-sm">
                 <input
                   type="time"
-                  value={timeFromIso(block!.range_start)}
+                  value={isoToParkTime(block!.range_start)}
                   min={bounds?.[0]}
                   max={bounds?.[1]}
-                  onChange={(e) => update({ range_start: combineTodayWithTime(e.target.value) })}
+                  onChange={(e) => update({ range_start: parkTimeToday(e.target.value) })}
                   className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
                 />
                 <span className="text-white/40">to</span>
                 <input
                   type="time"
-                  value={timeFromIso(block!.range_end)}
+                  value={isoToParkTime(block!.range_end)}
                   min={bounds?.[0]}
                   max={bounds?.[1]}
-                  onChange={(e) => update({ range_end: combineTodayWithTime(e.target.value) })}
+                  onChange={(e) => update({ range_end: parkTimeToday(e.target.value) })}
                   className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
                 />
               </div>
@@ -393,13 +381,19 @@ function formatShowTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+const SHOW_TIER_OPTIONS: { value: PreferenceTier; label: string }[] = [
+  { value: "MUST_GO", label: "Must-see" },
+  { value: "NICE_TO_HAVE", label: "Would like" },
+  { value: "SKIP", label: "Skip" },
+];
+
 function ParadesAndShows({
   preferences,
-  setPreferences,
+  onChangeTier,
   attractions,
 }: {
   preferences: Preferences;
-  setPreferences: React.Dispatch<React.SetStateAction<Preferences>>;
+  onChangeTier: (id: string, tier: PreferenceTier | null) => void;
   attractions: AttractionListing[];
 }) {
   const parades = attractions.filter((a) => a.show_category === "PARADE");
@@ -408,62 +402,82 @@ function ParadesAndShows({
   return (
     <div className="flex flex-col gap-6">
       <p className="text-sm text-white/60">
-        Pick a specific one if you&apos;ve got your eye on it — we&apos;ll build the day around it. If it truly
-        can&apos;t fit, we&apos;ll tell you honestly instead of just dropping it silently.
+        Tag any you want to catch, just like attractions -- must-see ones get guaranteed a spot in the day
+        (and if one truly can&apos;t fit, we&apos;ll tell you honestly instead of dropping it silently). You
+        can pick more than one.
       </p>
-      <ShowPicker
-        title="Want to catch a parade?"
-        options={parades}
-        selectedId={preferences.desired_parade_id}
-        onSelect={(id) => setPreferences((p) => ({ ...p, desired_parade_id: id }))}
-        emptyText="No parade scheduled today."
-      />
-      <ShowPicker
-        title="Want to catch a nighttime show?"
-        options={nightShows}
-        selectedId={preferences.desired_nighttime_show_id}
-        onSelect={(id) => setPreferences((p) => ({ ...p, desired_nighttime_show_id: id }))}
+      <ShowTierGroup title="Parades" shows={parades} tiers={preferences.tiers} onChangeTier={onChangeTier} emptyText="No parade scheduled today." />
+      <ShowTierGroup
+        title="Nighttime shows"
+        shows={nightShows}
+        tiers={preferences.tiers}
+        onChangeTier={onChangeTier}
         emptyText="No nighttime show scheduled today."
       />
     </div>
   );
 }
 
-function ShowPicker({
+function ShowTierGroup({
   title,
-  options,
-  selectedId,
-  onSelect,
+  shows,
+  tiers,
+  onChangeTier,
   emptyText,
 }: {
   title: string;
-  options: AttractionListing[];
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
+  shows: AttractionListing[];
+  tiers: Record<string, PreferenceTier>;
+  onChangeTier: (id: string, tier: PreferenceTier | null) => void;
   emptyText: string;
 }) {
   return (
     <div>
       <p className="mb-2 text-sm font-semibold text-white">{title}</p>
-      {options.length === 0 ? (
+      {shows.length === 0 ? (
         <p className="text-sm text-white/40">{emptyText}</p>
       ) : (
-        <div className="flex flex-col gap-2">
-          <ChoiceCard selected={selectedId === null} onClick={() => onSelect(null)} title="Not today" body="Skip this one." />
-          {options.map((opt) => (
-            <ChoiceCard
-              key={opt.id}
-              selected={selectedId === opt.id}
-              onClick={() => onSelect(opt.id)}
-              title={opt.name}
-              body={
-                opt.time_windows.length > 0
-                  ? opt.time_windows.map((w) => formatShowTime(w.start)).join(" · ")
-                  : "Showtime not yet announced."
-              }
-            />
-          ))}
-        </div>
+        <ul className="flex flex-col gap-2">
+          {shows.map((show) => {
+            const tier = tiers[show.id];
+            return (
+              <li
+                key={show.id}
+                className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-white">{show.name}</p>
+                  <p className="text-xs text-white/40">
+                    {show.time_windows.length > 0
+                      ? show.time_windows.map((w) => formatShowTime(w.start)).join(" · ")
+                      : "Showtime not yet announced."}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  {SHOW_TIER_OPTIONS.map((opt) => {
+                    const active = tier === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => onChangeTier(show.id, active ? null : opt.value)}
+                        className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                          active
+                            ? opt.value === "SKIP"
+                              ? "bg-white/20 text-white"
+                              : "bg-amber-300 text-[#0a1e3f]"
+                            : "bg-white/5 text-white/50 hover:bg-white/10"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
@@ -612,18 +626,18 @@ function ArrivalDepartureStep({
       <div className="mt-2 flex items-center gap-2 text-sm">
         <input
           type="time"
-          value={timeFromIso(preferences.planned_arrival)}
+          value={isoToParkTime(preferences.planned_arrival)}
           onChange={(e) =>
-            setPreferences((p) => ({ ...p, planned_arrival: e.target.value ? combineTodayWithTime(e.target.value) : null }))
+            setPreferences((p) => ({ ...p, planned_arrival: e.target.value ? parkTimeToday(e.target.value) : null }))
           }
           className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
         />
         <span className="text-white/40">to</span>
         <input
           type="time"
-          value={timeFromIso(preferences.planned_departure)}
+          value={isoToParkTime(preferences.planned_departure)}
           onChange={(e) =>
-            setPreferences((p) => ({ ...p, planned_departure: e.target.value ? combineTodayWithTime(e.target.value) : null }))
+            setPreferences((p) => ({ ...p, planned_departure: e.target.value ? parkTimeToday(e.target.value) : null }))
           }
           className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
         />

@@ -24,6 +24,7 @@ from optimized_experience.data.preferences import (
     ActivityKind,
     BlockPlacement,
     Preferences,
+    PreferenceTier,
 )
 from optimized_experience.data.reliability import ReliabilityProfile
 from optimized_experience.data.ride_durations import RideDurationMap
@@ -113,7 +114,8 @@ def _build_node(
     for display) -- the extraction logic is identical, only the inclusion
     filter and base_prize differ between the two callers."""
     location, slug = _location_and_slug(entry.id, child_by_id)
-    time_windows = _time_windows_for(entry)
+    service_time_minutes = _service_time_minutes(entry, ride_duration_map, slug)
+    time_windows = _time_windows_for(entry, service_time_minutes)
     if not time_windows:
         return None  # no schedulable window (e.g. a show with no announced showtimes)
 
@@ -123,7 +125,7 @@ def _build_node(
         name=entry.name,
         kind=entry.entityType,
         base_prize=base_prize,
-        service_time_minutes=_service_time_minutes(entry, ride_duration_map, slug),
+        service_time_minutes=service_time_minutes,
         wait_estimate_minutes=_wait_minutes(entry),
         wait_forecast=_wait_forecast_for(entry),
         time_windows=time_windows,
@@ -163,23 +165,23 @@ def build_candidate_nodes(
 
         _, slug = _location_and_slug(entry.id, child_by_id)
 
-        # The specific parade/nighttime show the guest picked (onboarding) is
-        # mandatory the same way a meal block is -- guaranteed a scheduling
-        # attempt, honestly reported if it truly can't fit, and (for
-        # ALL_RIDES_CHALLENGE below) included despite that mode otherwise
-        # excluding SHOW entities entirely. Matched by exact id, not category --
-        # a day can run several shows in the same category (e.g. multiple
-        # nighttime spectaculars), and the guest asked for one specific show,
-        # not "any show like this."
-        wants_this_show = entry.id in (preferences.desired_parade_id, preferences.desired_nighttime_show_id)
+        # Same tier system as attractions -- a show tagged MUST_GO is
+        # mandatory (guaranteed a scheduling attempt, honestly reported if it
+        # truly can't fit), and (for ALL_RIDES_CHALLENGE below) included
+        # despite that mode otherwise excluding SHOW entities entirely. Any
+        # number of shows can be MUST_GO -- a day can run several a guest
+        # wants to see (e.g. multiple nighttime spectaculars in rotation),
+        # and a single-pick toggle previously made that impossible.
+        tier = preferences.tier_for(slug, entry.id)
+        wants_this_show = entry.entityType == "SHOW" and tier is PreferenceTier.MUST_GO
 
         base_prize = preferences.base_prize_for(slug, entry.id)
         if objective == "MAXIMIZE_PRIZE":
             if base_prize is None and not wants_this_show:
                 continue  # guest tagged this attraction/show SKIP
-        else:  # ALL_RIDES_CHALLENGE: tiers ignored for inclusion, kept only as a tie-break
-            if entry.entityType == "SHOW" and not wants_this_show:
-                continue  # shows stay excluded here unless explicitly requested
+        else:  # ALL_RIDES_CHALLENGE: tiers ignored for attraction inclusion, kept only as a tie-break
+            if entry.entityType == "SHOW" and tier not in (PreferenceTier.MUST_GO, PreferenceTier.NICE_TO_HAVE):
+                continue  # shows stay excluded here unless the guest actually wants them
             base_prize = base_prize if base_prize is not None else DEFAULT_BASE_PRIZE
 
         node = _build_node(
@@ -269,14 +271,31 @@ def build_listing_nodes(
     return nodes
 
 
+def _park_local_hour(moment: datetime, hour: int, minute: int) -> datetime:
+    """`moment` at a given hour/minute of *park-local* wall-clock time.
+    `.replace(hour=...)` alone is wrong whenever `moment` carries non-Pacific
+    tzinfo -- a guest-supplied planned_arrival/departure comes from the
+    browser as a UTC ("Z"-suffixed) timestamp, and setting hour=17 directly
+    on a UTC-aware datetime produces 5pm UTC (10am Pacific), not 5pm Pacific.
+    Converting to PARK_TIMEZONE first fixes that; the returned datetime keeps
+    its Pacific tzinfo, which is fine to compare/min/max against other-tzinfo
+    aware datetimes (Python compares by absolute instant, not wall-clock
+    fields). Naive datetimes (offline/replay tests' convention -- see
+    tests/test_planning.py's DAY_START/DAY_END) are left as-is and treated as
+    already being park-local, since there's no tzinfo to normalize from."""
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(PARK_TIMEZONE)
+    return moment.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
 def _solver_choice_window(kind: ActivityKind, day_start: datetime, day_end: datetime) -> TimeWindow:
     default = _MEAL_HOUR_BOUNDS.get(kind)
     if default is None:
         return TimeWindow(start=day_start, end=day_end)
 
     (start_h, start_m), (end_h, end_m) = default
-    window_start = max(day_start, day_start.replace(hour=start_h, minute=start_m, second=0, microsecond=0))
-    window_end = min(day_end, day_start.replace(hour=end_h, minute=end_m, second=0, microsecond=0))
+    window_start = max(day_start, _park_local_hour(day_start, start_h, start_m))
+    window_end = min(day_end, _park_local_hour(day_start, end_h, end_m))
     if window_start >= window_end:
         # The default hour range doesn't fit inside today's actual budget (e.g. a
         # guest leaving before dinner) -- fall back to the whole day rather than
@@ -300,8 +319,8 @@ def _clamp_to_meal_bounds(
         return window
 
     (start_h, start_m), (end_h, end_m) = bounds
-    bound_start = max(day_start, day_start.replace(hour=start_h, minute=start_m, second=0, microsecond=0))
-    bound_end = min(day_end, day_start.replace(hour=end_h, minute=end_m, second=0, microsecond=0))
+    bound_start = max(day_start, _park_local_hour(day_start, start_h, start_m))
+    bound_end = min(day_end, _park_local_hour(day_start, end_h, end_m))
     if bound_start >= bound_end:
         bound_start, bound_end = day_start, day_end
 
@@ -398,9 +417,19 @@ def build_plan_request(
     )
 
 
-def _time_windows_for(entry: LiveDataEntry) -> list[TimeWindow]:
+def _time_windows_for(entry: LiveDataEntry, duration_minutes: float) -> list[TimeWindow]:
     if entry.entityType == "SHOW":
-        return [TimeWindow(start=s.startTime, end=s.endTime) for s in entry.showtimes]
+        # themeparks.wiki reports some showtimes (Fantasmic!, Paint the Night,
+        # etc. observed) with startTime == endTime -- a single announced
+        # instant, not a real duration. A zero-width feasibility window is
+        # all but unschedulable (nothing will ever arrive at that exact
+        # instant), so widen it using the resolved service duration whenever
+        # the raw window is degenerate.
+        windows = []
+        for s in entry.showtimes:
+            end = s.endTime if s.endTime > s.startTime else s.startTime + timedelta(minutes=duration_minutes)
+            windows.append(TimeWindow(start=s.startTime, end=end))
+        return windows
     return [TimeWindow(start=p.startTime, end=p.endTime) for p in entry.operatingHours]
 
 
@@ -408,7 +437,12 @@ def _service_time_minutes(entry: LiveDataEntry, ride_duration_map: RideDurationM
     if entry.entityType == "SHOW" and entry.showtimes:
         first = entry.showtimes[0]
         duration = (first.endTime - first.startTime).total_seconds() / 60.0
-        return max(duration, 1.0)
+        if duration > 0:
+            return duration
+        # Degenerate (zero/negative) raw duration -- fall back to a
+        # hand-seeded or default estimate rather than clamping to ~1 minute,
+        # which would still produce an unrealistically narrow window for
+        # something like a 20-minute nighttime spectacular.
     return ride_duration_map.duration_for(slug, entry.id)
 
 

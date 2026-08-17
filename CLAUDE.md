@@ -32,21 +32,59 @@ the repo root.
   `GET /api/attractions`. See "Architecture" below for the full current shape; don't treat
   the original Plan 4 proposal doc as authoritative on specifics, several things changed
   during and after implementation (see the follow-up fixes immediately below).
-- **Post-Plan-4 fixes (same round, found via actually using the UI):** (1) parade/nighttime-show
-  selection changed from a blanket boolean ("see a parade?") to picking a *specific* show by
-  id (`desired_parade_id`/`desired_nighttime_show_id`) -- the boolean version silently forced
-  *every* show in a category mandatory, and this park runs multiple NIGHTTIME_SPECTACULAR
-  shows in rotation on a normal day. (2) repeat-ride requests (e.g. "ride Space Mountain 3x")
-  were landing back-to-back in the same visit, because duplicate candidate nodes shared one
-  wide time window and a travel-minimizing solver treats revisiting the same location as
-  free -- fixed by splitting each repeat visit into its own non-overlapping slice of the day
-  at candidate-build time (`planning._repeated_copies`/`_split_window`), not a solver-level
+- **Post-Plan-4 fixes, round 1 (same round, found via actually using the UI):** (1) parade/
+  nighttime-show selection initially changed from a blanket boolean ("see a parade?") to a
+  single specific-show-id pick, since the boolean silently forced *every* show in a category
+  mandatory and this park runs multiple NIGHTTIME_SPECTACULAR shows in rotation on a normal
+  day -- **superseded by round 2 below**, which replaced even the single-pick version with
+  full tiering. (2) repeat-ride requests (e.g. "ride Space Mountain 3x") were landing
+  back-to-back in the same visit, because duplicate candidate nodes shared one wide time
+  window and a travel-minimizing solver treats revisiting the same location as free -- fixed
+  by splitting each repeat visit into its own non-overlapping slice of the day at
+  candidate-build time (`planning._repeated_copies`/`_split_window`), not a solver-level
   constraint. (3) lunch/dinner are now hard-bounded (11am-3pm / 5-11pm, enforced client-side
   via input min/max *and* server-side via a clamp) and a snack-break block was added. (4)
   every scheduled step now carries a plain-language, guest-facing justification
   (`optimizer/rationale.py`, e.g. "Standby was running about 15 min -- Lightning Lane skips
   it.") distinct from the solver-internal `rationale` field. (5) View A cards are tappable to
   mark done (fades + strikethrough + checkmark, persisted to localStorage).
+- **Post-Plan-4 fixes, round 2 (guest-reported: "schedule stops at 8pm even though I said
+  11pm," "can't pick more than one show," "always leaves out Fantasmic," "dinner at 10am"):**
+  all four were real bugs, not misunderstandings -- verified against live park data (which was
+  open until midnight) before touching code. (1) **Timezone bug, frontend:** the onboarding's
+  arrival/departure/meal-time inputs built a JS `Date` in the *browser's* local timezone
+  (`new Date(); d.setHours(...)`), not the park's (`America/Los_Angeles`) -- a guest whose
+  device isn't set to Pacific time had every specific time they entered silently
+  mis-localized (an 11pm-Eastern departure became 8pm-Pacific on the actual schedule). Fixed
+  by `frontend/app/lib/parkTime.ts`'s `parkTimeToday()`/`isoToParkTime()`, a DST-safe,
+  library-free UTC-anchored conversion (two `Intl.DateTimeFormat` round-trips, never a
+  browser-timezone-dependent `new Date(string)` parse, which would silently recontaminate the
+  result with the browser's own zone -- an actual bug hit and fixed while building this fix
+  itself, worth remembering if this code is ever touched again). (2) **Timezone bug,
+  backend:** `planning._solver_choice_window`/`_clamp_to_meal_bounds` did
+  `day_start.replace(hour=17, ...)` to build "5pm today" -- correct only when `day_start`
+  already carries Pacific tzinfo, which a guest-supplied `planned_arrival` (sent as a UTC "Z"
+  timestamp) does not; `.replace()` on a UTC-aware datetime sets 5pm *UTC* (10am Pacific).
+  Fixed via `planning._park_local_hour()`, which converts to `PARK_TIMEZONE` first (and
+  leaves *naive* datetimes -- the offline/replay tests' convention -- untouched, since
+  there's no tzinfo to normalize from). **General lesson for this codebase: never
+  `.replace(hour=...)` on a datetime that might carry foreign tzinfo; always route through
+  `_park_local_hour()` (or the equivalent) first.** (3) **Show selection redesigned to full
+  tiering:** `desired_parade_id`/`desired_nighttime_show_id` (round 1's single-pick fields)
+  removed entirely; shows now use the exact same `Preferences.tiers` dict as attractions via
+  `Preferences.tier_for()` (renamed from private `_tier_for`) -- any number of shows can be
+  tagged MUST_GO (mandatory, guaranteed attempt) or NICE_TO_HAVE (included, not forced),
+  fixing "can't pick more than one show." Frontend: `OnboardingFlow.tsx`'s Parades & Shows
+  step is now Must-see/Would-like/Skip buttons per show, not a single-select list. (4)
+  **Zero-width showtime windows:** themeparks.wiki sometimes reports a showtime with
+  `startTime == endTime` (observed live for Fantasmic!, Paint the Night) -- a single
+  announced instant, not a real duration, which produced an all-but-unschedulable zero-width
+  `Node.time_windows` entry regardless of tiering (the deeper reason Fantasmic kept getting
+  dropped). Fixed in `planning._time_windows_for()`/`_service_time_minutes()`: duration is
+  now resolved *before* building the window (hand-seeded value from
+  `ride_durations.example.yaml` -- which now also covers the known parades/nighttime shows,
+  e.g. `fantasmic: 22` -- else the real showtime duration if positive, else the generic
+  default), and a degenerate raw window is widened to `[start, start + duration]`.
 
 Indoor/outdoor queue scoring is explicitly deferred (no reliable public data source).
 
@@ -110,8 +148,8 @@ dev session is also running against it, otherwise you'll be verifying against st
   Protocol), `weather_client.py` (api.weather.gov, same real/replay split),
   `preferences.py` (guest tiers + all day-level settings: Lightning Lane toggle, walking
   pace, navigation strategy, arrival/departure, activity blocks incl. `ActivityKind.SNACK`,
-  `desired_parade_id`/`desired_nighttime_show_id` -- specific show entity ids, not booleans,
-  see "Post-Plan-4 fixes" above -- `repeat_counts`), `reliability.py`, `lands.py`,
+  `repeat_counts`; `tier_for()` -- public, used by both attractions and shows, see
+  "Post-Plan-4 fixes" round 2 above), `reliability.py`, `lands.py`,
   `ride_durations.py`, and `shows.py` (all four hand-authored YAML config loaders, same
   pattern: qualitative/measurement data no API exposes, refinable over time -- see "Data
   provenance" above), `models.py` (raw API response shapes, incl. `PriceInfo` for real
@@ -174,10 +212,12 @@ dev session is also running against it, otherwise you'll be verifying against st
   `_MEAL_HOUR_BOUNDS` (hard hour bounds for lunch (11am-3pm) and dinner (5-11pm), used both
   as the `SOLVER_CHOICE` default window *and* as a hard clamp on `FIXED_TIME`/
   `PREFERRED_RANGE` placements via `_clamp_to_meal_bounds()` -- a guest can't schedule
-  "lunch" at 9pm even by explicitly requesting it; snack/shopping/other stay unconstrained).
-  A guest-picked specific parade/nighttime show (`desired_parade_id`/
-  `desired_nighttime_show_id`) is marked mandatory by exact entity-id match, not category --
-  see "Post-Plan-4 fixes" above for why. `_repeated_copies()` handles guest-requested repeat
+  "lunch" at 9pm even by explicitly requesting it; snack/shopping/other stay unconstrained;
+  both bound-construction functions route "5pm today" through `_park_local_hour()`, not a
+  raw `.replace(hour=...)` -- see "Post-Plan-4 fixes" round 2 above for why that distinction
+  matters). A show tagged MUST_GO (`Preferences.tier_for()`, same tier system as attractions)
+  is marked mandatory -- any number of shows, not just one per category; see "Post-Plan-4
+  fixes" round 2 above. `_repeated_copies()` handles guest-requested repeat
   visits (`repeat_counts`): splits the attraction's operating window into `count` equal
   chronological slices (`_split_window()`) and gives each duplicate candidate its own slice,
   so a travel-minimizing solver can't cluster them back-to-back for free -- this is a
@@ -200,11 +240,15 @@ dev session is also running against it, otherwise you'll be verifying against st
   is a 7-step wizard: Attractions (objective choice + `AttractionPicker.tsx`, one list
   grouped by land, Must-see/Would-like/Skip per row, with an inline repeat-count stepper
   that appears once a ride is tagged) -> Meals & shopping (Lunch/Dinner/Snack/Shopping,
-  time-bounded per kind) -> Parades & shows (`ShowPicker`, lists the actual named
-  parade/nighttime-show options with real showtimes from `/api/attractions`, not a boolean
-  toggle) -> Water rides (weather-comfort preference, its own step) -> Lightning Lane
-  (plain-language Multi Pass/Single Pass explainer + toggle) -> Walking pace (its own step)
-  -> Arrival & departure. On completion, preferences + objective save to `localStorage` and
+  time-bounded per kind, all "HH:MM today" conversions routed through `lib/parkTime.ts`'s
+  `parkTimeToday()`/`isoToParkTime()` -- never the browser's own timezone, see "Post-Plan-4
+  fixes" round 2 above) -> Parades & shows (`ShowTierGroup`, same Must-see/Would-like/Skip
+  buttons as the attraction picker, feeding the same `tiers` dict -- lists the actual named
+  parade/nighttime-show options with real showtimes from `/api/attractions`; any number can
+  be tagged, not a single-pick toggle) -> Water rides (weather-comfort preference, its own
+  step) -> Lightning Lane (plain-language Multi Pass/Single Pass explainer + toggle) ->
+  Walking pace (its own step) -> Arrival & departure (also via `lib/parkTime.ts`). On
+  completion, preferences + objective save to `localStorage` and
   `/api/plan` fires. `components/ThreeViewResults.tsx` is the post-solve screen: a segmented
   tab control (Optimized/Adjust/Build Your Own) plus touch-swipe detection
   (`data-swipe-region`, no external gesture library) switching between them. Optimized is

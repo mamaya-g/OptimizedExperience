@@ -94,27 +94,26 @@ class Preferences(BaseModel):
     planned_arrival: datetime | None = None
     planned_departure: datetime | None = None
     activity_blocks: list[ActivityBlock] = []
-    # Specific show entity id the guest wants -- not a blanket "any parade"
-    # toggle, since a given day can have several shows in the same category
-    # (e.g. multiple nighttime spectaculars run in rotation) and marking all
-    # of them mandatory would overload the schedule with shows the guest
-    # never asked for.
-    desired_parade_id: str | None = None
-    desired_nighttime_show_id: str | None = None
     # Attraction id/slug -> desired visit count (e.g. 2 = ride it twice).
     # Advanced/secondary setting -- absent or 1 means "once, same as always."
     repeat_counts: dict[str, int] = {}
 
     def base_prize_for(self, slug: str | None, entity_id: str) -> float | None:
         """Returns None if the guest tagged this attraction SKIP (exclude from candidates)."""
-        tier = self._tier_for(slug, entity_id)
+        tier = self.tier_for(slug, entity_id)
         if tier is None:
             return DEFAULT_BASE_PRIZE
         if tier is PreferenceTier.SKIP:
             return None
         return _TIER_BASE_PRIZE[tier]
 
-    def _tier_for(self, slug: str | None, entity_id: str) -> PreferenceTier | None:
+    def tier_for(self, slug: str | None, entity_id: str) -> PreferenceTier | None:
+        """Same tier system for shows as attractions -- a parade/nighttime
+        show tagged MUST_GO is treated as mandatory in planning.py (guaranteed
+        a scheduling attempt, honestly reported if it truly can't fit),
+        exactly like a meal block. This deliberately allows *any number* of
+        must-see shows, not just one -- a day can run several shows a guest
+        wants, and a single-pick toggle previously made that impossible."""
         if slug and slug in self.tiers:
             return self.tiers[slug]
         return self.tiers.get(entity_id)

@@ -53,3 +53,21 @@ durations:
   astroorbitor: 1.5
   dumbotheflyingelephant: 1.5
   madteaparty: 1.5
+
+  # Parades/nighttime shows: same ids/slugs as show_categories.example.yaml.
+  # Needed because themeparks.wiki sometimes reports a showtime as a single
+  # instant (startTime == endTime) rather than a real duration -- without a
+  # real duration here too, that collapses to a near-unschedulable
+  # zero-width window (see planning._time_windows_for).
+  ff9c3639-2edd-4ece-8515-54e71ccf1067: 15 # The Celebrate Happy Cavalcade
+  fcde2cc4-1977-4c8b-abfe-1d19032cef9f: 15 # The Celebrate Happy Cavalcade (Birthday Edition)
+  c60e9de0-df2b-4484-9b05-299939dc247a: 20 # Paint the Night
+  6387d964-4e0f-4d96-b183-a9d7c37bdf29: 6 # Welcome Fireworks
+  0bd8e001-83f8-4c9e-9e14-df5a2d6400c3: 15 # Halloween Screams with Fireworks
+  7bedcc70-2443-4b54-9815-b41d3a3a59f2: 12 # Halloween Screams with Projections
+  115863ac-0880-4630-afd3-b1a1b5033d51: 20 # Wondrous Journeys with Fireworks
+  2e062fa5-42fd-4167-859c-aa00fddfa22c: 18 # Wondrous Journeys with Projections
+  414c1f1e-335a-47ae-9f91-26c569edb56b: 20 # Wondrous Journeys
+  fantasmic: 22 # Fantasmic!
+  fa0ef252-8002-4c39-934b-46c3231d206e: 10 # Shadows of Memory: A Skywalker Saga
+  e9ef1443-c735-43b6-81c6-45e53527cf93: 12 # Fire of the Rising Moons

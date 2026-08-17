@@ -1,5 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -9,7 +10,15 @@ from optimized_experience.data.reliability import ReliabilityProfile
 from optimized_experience.data.ride_durations import load_ride_duration_map
 from optimized_experience.data.shows import load_show_category_map
 from optimized_experience.optimizer.contracts import TimeWindow
-from optimized_experience.data.models import ScheduleEntry, ScheduleResponse
+from optimized_experience.data.models import (
+    ChildEntity,
+    ChildrenResponse,
+    LiveDataEntry,
+    LiveResponse,
+    ScheduleEntry,
+    ScheduleResponse,
+    Showtime,
+)
 from optimized_experience.planning import (
     MANDATORY_ACTIVITY_PRIZE,
     build_activity_nodes,
@@ -271,9 +280,9 @@ def test_build_candidate_nodes_carries_lightning_lane_single_pass_price():
     assert rise.lightning_lane_price.formatted == "$29.00"
 
 
-def test_build_candidate_nodes_marks_requested_parade_mandatory():
+def test_build_candidate_nodes_marks_must_go_show_mandatory():
     children, live = _load_children_and_live()
-    preferences = Preferences(desired_parade_id=PAINT_THE_NIGHT_ID)
+    preferences = Preferences(tiers={PAINT_THE_NIGHT_ID: "MUST_GO"})
     nodes = build_candidate_nodes(
         children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
         show_category_map=SHOW_CATEGORY_MAP,
@@ -284,7 +293,7 @@ def test_build_candidate_nodes_marks_requested_parade_mandatory():
     assert paint_the_night.show_category == "PARADE"
 
 
-def test_build_candidate_nodes_does_not_force_parade_when_not_requested():
+def test_build_candidate_nodes_does_not_force_show_when_not_tagged():
     children, live = _load_children_and_live()
     nodes = build_candidate_nodes(
         children, live, Preferences(), ReliabilityProfile(), "MAXIMIZE_PRIZE",
@@ -295,25 +304,44 @@ def test_build_candidate_nodes_does_not_force_parade_when_not_requested():
     assert paint_the_night.base_prize != MANDATORY_ACTIVITY_PRIZE
 
 
-def test_build_candidate_nodes_marks_requested_nighttime_show_mandatory():
+def test_build_candidate_nodes_nice_to_have_show_is_included_but_not_mandatory():
     children, live = _load_children_and_live()
-    preferences = Preferences(desired_nighttime_show_id=WONDROUS_JOURNEYS_FIREWORKS_ID)
+    preferences = Preferences(tiers={WONDROUS_JOURNEYS_FIREWORKS_ID: "NICE_TO_HAVE"})
     nodes = build_candidate_nodes(
         children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
         show_category_map=SHOW_CATEGORY_MAP,
     )
     wondrous = next(n for n in nodes if n.id == WONDROUS_JOURNEYS_FIREWORKS_ID)
-    assert wondrous.mandatory is True
-    assert wondrous.show_category == "NIGHTTIME_SPECTACULAR"
+    assert wondrous.mandatory is False
+    assert wondrous.base_prize == 40.0
 
 
-def test_build_candidate_nodes_does_not_force_other_shows_in_same_category():
-    # Regression: a day can run several NIGHTTIME_SPECTACULAR shows at once
-    # (confirmed live: Fantasmic!, Wondrous Journeys, Shadows of Memory, Fire of
-    # the Rising Moons all categorized the same) -- picking one specific show
-    # must not drag every other show in its category along as mandatory too.
+def test_build_candidate_nodes_multiple_must_go_shows_all_mandatory():
+    # Regression: a single-pick "one specific show" mechanism used to make
+    # this impossible. A day can run several shows a guest wants to see (e.g.
+    # a parade AND a nighttime spectacular), and any number should be able to
+    # be tagged must-see, not just one per category.
     children, live = _load_children_and_live()
-    preferences = Preferences(desired_nighttime_show_id=WONDROUS_JOURNEYS_FIREWORKS_ID)
+    preferences = Preferences(
+        tiers={PAINT_THE_NIGHT_ID: "MUST_GO", WONDROUS_JOURNEYS_FIREWORKS_ID: "MUST_GO"}
+    )
+    nodes = build_candidate_nodes(
+        children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
+        show_category_map=SHOW_CATEGORY_MAP,
+    )
+    paint_the_night = next(n for n in nodes if n.id == PAINT_THE_NIGHT_ID)
+    wondrous = next(n for n in nodes if n.id == WONDROUS_JOURNEYS_FIREWORKS_ID)
+    assert paint_the_night.mandatory is True
+    assert wondrous.mandatory is True
+
+
+def test_build_candidate_nodes_must_go_show_does_not_force_other_shows_in_same_category():
+    # A day can run several NIGHTTIME_SPECTACULAR shows at once (confirmed
+    # live: Fantasmic!, Wondrous Journeys, Shadows of Memory, Fire of the
+    # Rising Moons all categorized the same) -- tagging one must-see must not
+    # drag every other show in its category along as mandatory too.
+    children, live = _load_children_and_live()
+    preferences = Preferences(tiers={WONDROUS_JOURNEYS_FIREWORKS_ID: "MUST_GO"})
     nodes = build_candidate_nodes(
         children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
         show_category_map=SHOW_CATEGORY_MAP,
@@ -323,16 +351,28 @@ def test_build_candidate_nodes_does_not_force_other_shows_in_same_category():
         assert fantasmic.mandatory is False
 
 
-def test_build_candidate_nodes_challenge_mode_still_includes_requested_parade():
+def test_build_candidate_nodes_challenge_mode_still_includes_must_go_show():
     # ALL_RIDES_CHALLENGE otherwise excludes every SHOW entity outright -- a guest
-    # explicitly asking to see the parade should still get it forced in.
+    # explicitly tagging a show must-see should still get it forced in.
     children, live = _load_children_and_live()
-    preferences = Preferences(desired_parade_id=PAINT_THE_NIGHT_ID)
+    preferences = Preferences(tiers={PAINT_THE_NIGHT_ID: "MUST_GO"})
     nodes = build_candidate_nodes(
         children, live, preferences, ReliabilityProfile(), "ALL_RIDES_CHALLENGE",
         show_category_map=SHOW_CATEGORY_MAP,
     )
     assert any(n.id == PAINT_THE_NIGHT_ID for n in nodes)
+
+
+def test_build_candidate_nodes_challenge_mode_includes_nice_to_have_show_but_not_mandatory():
+    children, live = _load_children_and_live()
+    preferences = Preferences(tiers={WONDROUS_JOURNEYS_FIREWORKS_ID: "NICE_TO_HAVE"})
+    nodes = build_candidate_nodes(
+        children, live, preferences, ReliabilityProfile(), "ALL_RIDES_CHALLENGE",
+        show_category_map=SHOW_CATEGORY_MAP,
+    )
+    wondrous = next((n for n in nodes if n.id == WONDROUS_JOURNEYS_FIREWORKS_ID), None)
+    assert wondrous is not None
+    assert wondrous.mandatory is False
 
 
 def test_build_candidate_nodes_challenge_mode_excludes_unrequested_shows():
@@ -404,3 +444,78 @@ def test_build_plan_request_resolves_navigation_fields_from_raw_string_preferenc
     request = build_plan_request("MAXIMIZE_PRIZE", DAY_START, DAY_END, [], [], preferences)
     assert request.navigation_strategy == "LAND_ORDER"
     assert request.walking_pace_mph == pytest.approx(2.0)
+
+
+def test_build_activity_nodes_clamps_dinner_to_pacific_hours_when_day_start_is_utc_aware():
+    # Regression: a guest-supplied planned_arrival/departure arrives from the
+    # browser as a UTC ("Z"-suffixed) timestamp. day_start.replace(hour=17)
+    # on a UTC-aware datetime used to set 5pm UTC (10am Pacific), not 5pm
+    # Pacific -- "dinner" landed at 10am. day_start/day_end here represent
+    # 9am-11pm Pacific, but expressed with UTC tzinfo, exactly like a real
+    # request from the API.
+    utc_day_start = datetime(2026, 8, 17, 16, 0, tzinfo=timezone.utc)  # 9am Pacific
+    utc_day_end = datetime(2026, 8, 18, 6, 0, tzinfo=timezone.utc)  # 11pm Pacific
+    block = ActivityBlock(name="Dinner", duration_minutes=60, placement=BlockPlacement.SOLVER_CHOICE, kind="DINNER")
+    nodes = build_activity_nodes([block], utc_day_start, utc_day_end)
+    window = nodes[0].time_windows[0]
+
+    pacific = ZoneInfo("America/Los_Angeles")
+    assert window.start.astimezone(pacific).hour == 17
+    assert window.end.astimezone(pacific).hour == 23
+
+
+def test_build_activity_nodes_clamps_preferred_range_dinner_to_pacific_hours_when_utc_aware():
+    # Same regression as above, but for an explicit guest-picked time rather
+    # than the SOLVER_CHOICE default window.
+    utc_day_start = datetime(2026, 8, 17, 16, 0, tzinfo=timezone.utc)
+    utc_day_end = datetime(2026, 8, 18, 6, 0, tzinfo=timezone.utc)
+    # Guest picked "7:30 PM" Pacific for dinner -- sent as its correct UTC instant.
+    range_start = datetime(2026, 8, 18, 2, 30, tzinfo=timezone.utc)  # 7:30pm Pacific
+    range_end = datetime(2026, 8, 18, 3, 30, tzinfo=timezone.utc)  # 8:30pm Pacific
+    block = ActivityBlock(
+        name="Dinner", duration_minutes=60, placement=BlockPlacement.PREFERRED_RANGE, kind="DINNER",
+        range_start=range_start, range_end=range_end,
+    )
+    nodes = build_activity_nodes([block], utc_day_start, utc_day_end)
+    window = nodes[0].time_windows[0]
+
+    pacific = ZoneInfo("America/Los_Angeles")
+    assert window.start.astimezone(pacific).hour == 19
+    assert window.start.astimezone(pacific).minute == 30
+    assert window.end.astimezone(pacific).hour == 20
+
+
+def _show_entry(entity_id: str, name: str, showtime: datetime, degenerate: bool = True) -> LiveDataEntry:
+    return LiveDataEntry(
+        id=entity_id,
+        name=name,
+        entityType="SHOW",
+        status="OPERATING",
+        showtimes=[Showtime(startTime=showtime, endTime=showtime if degenerate else showtime + timedelta(minutes=20))],
+    )
+
+
+def test_build_candidate_nodes_widens_degenerate_zero_width_showtime_window():
+    # Regression: themeparks.wiki sometimes reports a showtime as a single
+    # instant (startTime == endTime, observed live for Fantasmic!/Paint the
+    # Night) rather than a real duration. A zero-width feasibility window is
+    # all but unschedulable -- nothing will ever arrive at that exact instant
+    # -- so it must be widened using the resolved service duration.
+    showtime = datetime(2026, 8, 16, 21, 5)
+    entry = _show_entry("fake-fantasmic-id", "Fantasmic!", showtime, degenerate=True)
+    children = ChildrenResponse(
+        id="park", name="park", entityType="PARK", timezone="America/Los_Angeles",
+        children=[ChildEntity(id="fake-fantasmic-id", name="Fantasmic!", entityType="SHOW", slug="fantasmic")],
+    )
+    live = LiveResponse(id="park", liveData=[entry])
+    preferences = Preferences(tiers={"fake-fantasmic-id": "MUST_GO"})
+
+    nodes = build_candidate_nodes(
+        children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
+        ride_duration_map=RIDE_DURATION_MAP, show_category_map=SHOW_CATEGORY_MAP,
+    )
+    node = next(n for n in nodes if n.id == "fake-fantasmic-id")
+    window = node.time_windows[0]
+    assert window.end > window.start
+    assert node.service_time_minutes == 22  # hand-seeded Fantasmic! duration
+    assert window.end - window.start == timedelta(minutes=22)

@@ -77,8 +77,8 @@ def test_post_plan_respects_objective_query_param(client):
     assert response.status_code == 200
 
 
-def test_post_plan_accepts_desired_parade_id_preference(client):
-    response = client.post("/api/plan", json={"desired_parade_id": PAINT_THE_NIGHT_ID})
+def test_post_plan_accepts_must_go_show_tier(client):
+    response = client.post("/api/plan", json={"tiers": {PAINT_THE_NIGHT_ID: "MUST_GO"}})
     assert response.status_code == 200
 
 

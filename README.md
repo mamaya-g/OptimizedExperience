@@ -114,10 +114,11 @@ each slot (live wait, weather, reliability timing, tier, Lightning Lane).
   are hard-bounded to 11am-3pm and 5-11pm respectively (enforced both in the
   browser's time picker and server-side); snack and shopping are
   unconstrained.
-- **Parades/nighttime shows:** a guest picks a *specific* show by id (not a
-  blanket "any parade" toggle), which is then treated as mandatory the same
-  way a meal block is -- guaranteed a scheduling attempt, honestly reported
-  if it truly can't fit.
+- **Parades/nighttime shows:** tagged Must-see/Would-like/Skip, the same
+  tier system as attractions -- any number can be must-see, not a single
+  "pick one" toggle. A must-see show is treated as mandatory the same way a
+  meal block is -- guaranteed a scheduling attempt, honestly reported if it
+  truly can't fit.
 - **Repeat rides:** requesting a ride N times duplicates it into N candidate
   nodes, each restricted to its own slice of the day, so the solver can't
   cluster them back-to-back just because that's cheaper to route.
