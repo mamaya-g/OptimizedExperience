@@ -1,0 +1,25 @@
+# Copy to show_categories.yaml (gitignored) if you want to adjust it.
+#
+# Hand-seeded: no API field distinguishes a parade from a nighttime
+# fireworks/projection show from incidental street entertainment -- they're
+# all just entityType "SHOW". Same best-effort/refinable pattern as
+# reliability_profile.yaml and land_map.yaml. Anything not listed here
+# defaults to OTHER (bands, character meet & greets, ceremonies, etc. --
+# pleasant, but not something a guest needs a dedicated "do you want to see
+# this?" onboarding toggle for).
+categories:
+  # Parades
+  ff9c3639-2edd-4ece-8515-54e71ccf1067: PARADE # The Celebrate Happy Cavalcade
+  fcde2cc4-1977-4c8b-abfe-1d19032cef9f: PARADE # The Celebrate Happy Cavalcade (Birthday Edition)
+  c60e9de0-df2b-4484-9b05-299939dc247a: PARADE # Paint the Night
+
+  # Nighttime spectaculars (fireworks / projection shows)
+  6387d964-4e0f-4d96-b183-a9d7c37bdf29: NIGHTTIME_SPECTACULAR # Welcome Fireworks
+  0bd8e001-83f8-4c9e-9e14-df5a2d6400c3: NIGHTTIME_SPECTACULAR # Halloween Screams with Fireworks
+  7bedcc70-2443-4b54-9815-b41d3a3a59f2: NIGHTTIME_SPECTACULAR # Halloween Screams with Projections
+  115863ac-0880-4630-afd3-b1a1b5033d51: NIGHTTIME_SPECTACULAR # Wondrous Journeys with Fireworks
+  2e062fa5-42fd-4167-859c-aa00fddfa22c: NIGHTTIME_SPECTACULAR # Wondrous Journeys with Projections
+  414c1f1e-335a-47ae-9f91-26c569edb56b: NIGHTTIME_SPECTACULAR # Wondrous Journeys
+  fantasmic: NIGHTTIME_SPECTACULAR # Fantasmic!
+  fa0ef252-8002-4c39-934b-46c3231d206e: NIGHTTIME_SPECTACULAR # Shadows of Memory: A Skywalker Saga
+  e9ef1443-c735-43b6-81c6-45e53527cf93: NIGHTTIME_SPECTACULAR # Fire of the Rising Moons

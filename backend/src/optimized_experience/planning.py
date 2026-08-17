@@ -10,7 +10,14 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from optimized_experience.data.lands import LandMap
-from optimized_experience.data.models import ChildEntity, ChildrenResponse, LiveDataEntry, LiveResponse, ScheduleResponse
+from optimized_experience.data.models import (
+    ChildEntity,
+    ChildrenResponse,
+    LiveDataEntry,
+    LiveResponse,
+    PriceInfo,
+    ScheduleResponse,
+)
 from optimized_experience.data.preferences import (
     DEFAULT_BASE_PRIZE,
     ActivityBlock,
@@ -19,6 +26,8 @@ from optimized_experience.data.preferences import (
     Preferences,
 )
 from optimized_experience.data.reliability import ReliabilityProfile
+from optimized_experience.data.ride_durations import RideDurationMap
+from optimized_experience.data.shows import ShowCategoryMap
 from optimized_experience.data.weather_client import HourlyWeather
 from optimized_experience.optimizer.contracts import (
     Coordinates,
@@ -30,10 +39,6 @@ from optimized_experience.optimizer.contracts import (
     WaitForecastEntry,
 )
 from optimized_experience.optimizer.geography import WALKING_PACE_MPH
-
-# themeparks.wiki does not expose ride/show duration -- this is a documented
-# simplification, not a measured value. See plan notes on data limitations.
-DEFAULT_ATTRACTION_SERVICE_MINUTES = 4.0
 
 PARK_TIMEZONE = ZoneInfo("America/Los_Angeles")
 
@@ -78,6 +83,58 @@ _SOLVER_CHOICE_DEFAULT_WINDOW: dict[ActivityKind, tuple[tuple[int, int], tuple[i
 }
 
 
+def _location_and_slug(entry_id: str, child_by_id: dict[str, ChildEntity]) -> tuple[Coordinates | None, str | None]:
+    child = child_by_id.get(entry_id)
+    slug = child.slug if child else None
+    location = (
+        Coordinates(latitude=child.location.latitude, longitude=child.location.longitude)
+        if child and child.location
+        else None
+    )
+    return location, slug
+
+
+def _build_node(
+    entry: LiveDataEntry,
+    child_by_id: dict[str, ChildEntity],
+    ride_duration_map: RideDurationMap,
+    show_category_map: ShowCategoryMap,
+    reliability_profile: ReliabilityProfile,
+    land_map: LandMap,
+    base_prize: float,
+    mandatory: bool = False,
+) -> Node | None:
+    """Shared per-entry Node construction, used by both build_candidate_nodes()
+    (tier-filtered, fed to a solver) and build_listing_nodes() (unfiltered,
+    for display) -- the extraction logic is identical, only the inclusion
+    filter and base_prize differ between the two callers."""
+    location, slug = _location_and_slug(entry.id, child_by_id)
+    time_windows = _time_windows_for(entry)
+    if not time_windows:
+        return None  # no schedulable window (e.g. a show with no announced showtimes)
+
+    lightning_lane_type, lightning_lane_window, lightning_lane_price = _lightning_lane_info(entry)
+    return Node(
+        id=entry.id,
+        name=entry.name,
+        kind=entry.entityType,
+        base_prize=base_prize,
+        service_time_minutes=_service_time_minutes(entry, ride_duration_map, slug),
+        wait_estimate_minutes=_wait_minutes(entry),
+        wait_forecast=_wait_forecast_for(entry),
+        time_windows=time_windows,
+        lightning_lane_type=lightning_lane_type,
+        lightning_lane_window=lightning_lane_window,
+        lightning_lane_price=lightning_lane_price,
+        is_water_ride=reliability_profile.is_water_ride(slug, entry.id),
+        reliability_tier=reliability_profile.tier_for(slug, entry.id),
+        location=location,
+        land=land_map.land_for(slug, entry.id),
+        show_category=show_category_map.category_for(slug, entry.id) if entry.entityType == "SHOW" else None,
+        mandatory=mandatory,
+    )
+
+
 def build_candidate_nodes(
     children: ChildrenResponse,
     live: LiveResponse,
@@ -85,8 +142,12 @@ def build_candidate_nodes(
     reliability_profile: ReliabilityProfile,
     objective: Objective,
     land_map: LandMap | None = None,
+    ride_duration_map: RideDurationMap | None = None,
+    show_category_map: ShowCategoryMap | None = None,
 ) -> list[Node]:
     land_map = land_map or LandMap()
+    ride_duration_map = ride_duration_map or RideDurationMap()
+    show_category_map = show_category_map or ShowCategoryMap()
     child_by_id: dict[str, ChildEntity] = {child.id: child for child in children.children}
     nodes: list[Node] = []
 
@@ -96,48 +157,90 @@ def build_candidate_nodes(
         if entry.status != "OPERATING":
             continue
 
-        child = child_by_id.get(entry.id)
-        slug = child.slug if child else None
-        location = (
-            Coordinates(latitude=child.location.latitude, longitude=child.location.longitude)
-            if child and child.location
-            else None
+        _, slug = _location_and_slug(entry.id, child_by_id)
+
+        # A parade/nighttime show the guest explicitly asked for (onboarding
+        # toggle) is mandatory the same way a meal block is -- guaranteed a
+        # scheduling attempt, honestly reported if it truly can't fit, and (for
+        # ALL_RIDES_CHALLENGE below) included despite that mode otherwise
+        # excluding SHOW entities entirely.
+        category = show_category_map.category_for(slug, entry.id) if entry.entityType == "SHOW" else None
+        wants_this_show = (category == "PARADE" and preferences.see_parade) or (
+            category == "NIGHTTIME_SPECTACULAR" and preferences.see_nighttime_show
         )
-        time_windows = _time_windows_for(entry)
-        if not time_windows:
-            continue  # no schedulable window (e.g. a show with no announced showtimes)
 
         base_prize = preferences.base_prize_for(slug, entry.id)
         if objective == "MAXIMIZE_PRIZE":
-            if base_prize is None:
+            if base_prize is None and not wants_this_show:
                 continue  # guest tagged this attraction/show SKIP
         else:  # ALL_RIDES_CHALLENGE: tiers ignored for inclusion, kept only as a tie-break
-            if entry.entityType != "ATTRACTION":
-                continue
+            if entry.entityType == "SHOW" and not wants_this_show:
+                continue  # shows stay excluded here unless explicitly requested
             base_prize = base_prize if base_prize is not None else DEFAULT_BASE_PRIZE
 
-        if preferences.use_lightning_lane:
-            lightning_lane_type, lightning_lane_window = _lightning_lane_info(entry)
-        else:
-            lightning_lane_type, lightning_lane_window = "NONE", None
-        nodes.append(
-            Node(
-                id=entry.id,
-                name=entry.name,
-                kind=entry.entityType,
-                base_prize=base_prize,
-                service_time_minutes=_service_time_minutes(entry),
-                wait_estimate_minutes=_wait_minutes(entry),
-                wait_forecast=_wait_forecast_for(entry),
-                time_windows=time_windows,
-                lightning_lane_type=lightning_lane_type,
-                lightning_lane_window=lightning_lane_window,
-                is_water_ride=reliability_profile.is_water_ride(slug, entry.id),
-                reliability_tier=reliability_profile.tier_for(slug, entry.id),
-                location=location,
-                land=land_map.land_for(slug, entry.id),
-            )
+        node = _build_node(
+            entry,
+            child_by_id,
+            ride_duration_map,
+            show_category_map,
+            reliability_profile,
+            land_map,
+            base_prize=MANDATORY_ACTIVITY_PRIZE if wants_this_show else base_prize,
+            mandatory=wants_this_show,
         )
+        if node is None:
+            continue
+        if not preferences.use_lightning_lane:
+            node = node.model_copy(
+                update={"lightning_lane_type": "NONE", "lightning_lane_window": None, "lightning_lane_price": None}
+            )
+        nodes.append(node)
+        nodes.extend(_repeated_copies(node, preferences, slug))
+    return nodes
+
+
+def _repeated_copies(node: Node, preferences: Preferences, slug: str | None) -> list[Node]:
+    """N-1 duplicate candidates (suffixed ids) for a guest-requested repeat
+    visit -- e.g. repeat_counts={"spacemountain": 2} rides it twice. Handled
+    as independent candidates rather than solver-level "revisit" logic, so
+    every existing solver schedules them for free."""
+    count = preferences.repeat_counts[slug] if slug and slug in preferences.repeat_counts else (
+        preferences.repeat_counts.get(node.id, 1)
+    )
+    if count <= 1:
+        return []
+    return [node.model_copy(update={"id": f"{node.id}-visit-{i}"}) for i in range(2, count + 1)]
+
+
+def build_listing_nodes(
+    children: ChildrenResponse,
+    live: LiveResponse,
+    reliability_profile: ReliabilityProfile,
+    land_map: LandMap | None = None,
+    ride_duration_map: RideDurationMap | None = None,
+    show_category_map: ShowCategoryMap | None = None,
+) -> list[Node]:
+    """Every currently OPERATING attraction/show, regardless of any guest
+    tier -- for display only (the onboarding picker, the "didn't make the
+    cut" swap listing, "build your own"), never fed to a solver. Guests need
+    to see everything to set preferences on it, not a pre-filtered set."""
+    land_map = land_map or LandMap()
+    ride_duration_map = ride_duration_map or RideDurationMap()
+    show_category_map = show_category_map or ShowCategoryMap()
+    child_by_id: dict[str, ChildEntity] = {child.id: child for child in children.children}
+    nodes: list[Node] = []
+
+    for entry in live.liveData:
+        if entry.entityType not in ("ATTRACTION", "SHOW"):
+            continue
+        if entry.status != "OPERATING":
+            continue
+        node = _build_node(
+            entry, child_by_id, ride_duration_map, show_category_map, reliability_profile, land_map,
+            base_prize=DEFAULT_BASE_PRIZE,
+        )
+        if node is not None:
+            nodes.append(node)
     return nodes
 
 
@@ -246,12 +349,12 @@ def _time_windows_for(entry: LiveDataEntry) -> list[TimeWindow]:
     return [TimeWindow(start=p.startTime, end=p.endTime) for p in entry.operatingHours]
 
 
-def _service_time_minutes(entry: LiveDataEntry) -> float:
+def _service_time_minutes(entry: LiveDataEntry, ride_duration_map: RideDurationMap, slug: str | None) -> float:
     if entry.entityType == "SHOW" and entry.showtimes:
         first = entry.showtimes[0]
         duration = (first.endTime - first.startTime).total_seconds() / 60.0
         return max(duration, 1.0)
-    return DEFAULT_ATTRACTION_SERVICE_MINUTES
+    return ride_duration_map.duration_for(slug, entry.id)
 
 
 def _wait_minutes(entry: LiveDataEntry) -> float:
@@ -268,20 +371,22 @@ def _wait_forecast_for(entry: LiveDataEntry) -> list[WaitForecastEntry]:
     ]
 
 
-def _lightning_lane_info(entry: LiveDataEntry) -> tuple[LightningLaneType, TimeWindow | None]:
+def _lightning_lane_info(
+    entry: LiveDataEntry,
+) -> tuple[LightningLaneType, TimeWindow | None, PriceInfo | None]:
     queue = entry.queue
     if queue is None:
-        return "NONE", None
+        return "NONE", None, None
 
     multi = queue.RETURN_TIME
     if multi and multi.state == "AVAILABLE" and multi.returnStart and multi.returnEnd:
-        return "MULTI", TimeWindow(start=multi.returnStart, end=multi.returnEnd)
+        return "MULTI", TimeWindow(start=multi.returnStart, end=multi.returnEnd), None
 
     single = queue.PAID_RETURN_TIME
     if single and single.state == "AVAILABLE" and single.returnStart and single.returnEnd:
-        return "SINGLE", TimeWindow(start=single.returnStart, end=single.returnEnd)
+        return "SINGLE", TimeWindow(start=single.returnStart, end=single.returnEnd), single.price
 
-    return "NONE", None
+    return "NONE", None, None
 
 
 def _closing_time_for(schedule: ScheduleResponse, moment: datetime) -> datetime | None:

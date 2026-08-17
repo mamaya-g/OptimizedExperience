@@ -6,4 +6,6 @@ __pycache__/
 config/preferences.yaml
 config/reliability_profile.yaml
 config/land_map.yaml
+config/ride_durations.yaml
+config/show_categories.yaml
 status_log.csv

@@ -6,19 +6,35 @@ import pytest
 from optimized_experience.data.client import ReplayDataSource
 from optimized_experience.data.preferences import ActivityBlock, BlockPlacement, Preferences
 from optimized_experience.data.reliability import ReliabilityProfile
+from optimized_experience.data.ride_durations import load_ride_duration_map
+from optimized_experience.data.shows import load_show_category_map
 from optimized_experience.optimizer.contracts import TimeWindow
 from optimized_experience.data.models import ScheduleEntry, ScheduleResponse
 from optimized_experience.planning import (
+    MANDATORY_ACTIVITY_PRIZE,
     build_activity_nodes,
     build_candidate_nodes,
+    build_listing_nodes,
     build_plan_request,
     resolve_park_close,
     resolve_start_time,
 )
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "disneyland_aug16"
+CONFIG_DIR = Path(__file__).parent.parent / "config"
 DAY_START = datetime(2026, 8, 16, 9, 0)
 DAY_END = datetime(2026, 8, 16, 22, 0)
+
+RIDE_DURATION_MAP = load_ride_duration_map(CONFIG_DIR / "ride_durations.example.yaml")
+SHOW_CATEGORY_MAP = load_show_category_map(CONFIG_DIR / "show_categories.example.yaml")
+
+# Real ids/slugs present in the disneyland_aug16 fixture, cross-referenced against
+# show_categories.example.yaml -- Paint the Night is OPERATING with showtimes there,
+# and is the PARADE-categorized show that fixture actually has live.
+PAINT_THE_NIGHT_ID = "c60e9de0-df2b-4484-9b05-299939dc247a"
+WONDROUS_JOURNEYS_FIREWORKS_ID = "115863ac-0880-4630-afd3-b1a1b5033d51"
+RISE_OF_THE_RESISTANCE_ID = "34b1d70f-11c4-42df-935e-d5582c9f1a8e"
+SPACE_MOUNTAIN_ID = "9167db1d-e5e7-46da-a07f-ae30a87bc4c4"
 
 _SCHEDULE = ScheduleResponse(
     id="park",
@@ -177,6 +193,116 @@ def test_build_plan_request_resolves_navigation_fields_from_enum_preferences():
     request = build_plan_request("MAXIMIZE_PRIZE", DAY_START, DAY_END, [], [], preferences)
     assert request.navigation_strategy == "CLUSTERED"
     assert request.walking_pace_mph == pytest.approx(3.3)
+
+
+def test_build_candidate_nodes_uses_real_ride_duration_not_flat_default():
+    children, live = _load_children_and_live()
+    nodes = build_candidate_nodes(
+        children, live, Preferences(), ReliabilityProfile(), "MAXIMIZE_PRIZE",
+        ride_duration_map=RIDE_DURATION_MAP,
+    )
+    rise = next(n for n in nodes if n.id == RISE_OF_THE_RESISTANCE_ID)
+    assert rise.service_time_minutes == 18
+
+
+def test_build_candidate_nodes_carries_lightning_lane_single_pass_price():
+    children, live = _load_children_and_live()
+    nodes = build_candidate_nodes(children, live, Preferences(), ReliabilityProfile(), "MAXIMIZE_PRIZE")
+    rise = next(n for n in nodes if n.id == RISE_OF_THE_RESISTANCE_ID)
+    assert rise.lightning_lane_type == "SINGLE"
+    assert rise.lightning_lane_price is not None
+    assert rise.lightning_lane_price.formatted == "$29.00"
+
+
+def test_build_candidate_nodes_marks_requested_parade_mandatory():
+    children, live = _load_children_and_live()
+    preferences = Preferences(see_parade=True)
+    nodes = build_candidate_nodes(
+        children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
+        show_category_map=SHOW_CATEGORY_MAP,
+    )
+    paint_the_night = next(n for n in nodes if n.id == PAINT_THE_NIGHT_ID)
+    assert paint_the_night.mandatory is True
+    assert paint_the_night.base_prize == MANDATORY_ACTIVITY_PRIZE
+    assert paint_the_night.show_category == "PARADE"
+
+
+def test_build_candidate_nodes_does_not_force_parade_when_not_requested():
+    children, live = _load_children_and_live()
+    nodes = build_candidate_nodes(
+        children, live, Preferences(see_parade=False), ReliabilityProfile(), "MAXIMIZE_PRIZE",
+        show_category_map=SHOW_CATEGORY_MAP,
+    )
+    paint_the_night = next(n for n in nodes if n.id == PAINT_THE_NIGHT_ID)
+    assert paint_the_night.mandatory is False
+    assert paint_the_night.base_prize != MANDATORY_ACTIVITY_PRIZE
+
+
+def test_build_candidate_nodes_marks_requested_nighttime_show_mandatory():
+    children, live = _load_children_and_live()
+    preferences = Preferences(see_nighttime_show=True)
+    nodes = build_candidate_nodes(
+        children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
+        show_category_map=SHOW_CATEGORY_MAP,
+    )
+    wondrous = next(n for n in nodes if n.id == WONDROUS_JOURNEYS_FIREWORKS_ID)
+    assert wondrous.mandatory is True
+    assert wondrous.show_category == "NIGHTTIME_SPECTACULAR"
+
+
+def test_build_candidate_nodes_challenge_mode_still_includes_requested_parade():
+    # ALL_RIDES_CHALLENGE otherwise excludes every SHOW entity outright -- a guest
+    # explicitly asking to see the parade should still get it forced in.
+    children, live = _load_children_and_live()
+    preferences = Preferences(see_parade=True)
+    nodes = build_candidate_nodes(
+        children, live, preferences, ReliabilityProfile(), "ALL_RIDES_CHALLENGE",
+        show_category_map=SHOW_CATEGORY_MAP,
+    )
+    assert any(n.id == PAINT_THE_NIGHT_ID for n in nodes)
+
+
+def test_build_candidate_nodes_challenge_mode_excludes_unrequested_shows():
+    children, live = _load_children_and_live()
+    nodes = build_candidate_nodes(
+        children, live, Preferences(), ReliabilityProfile(), "ALL_RIDES_CHALLENGE",
+        show_category_map=SHOW_CATEGORY_MAP,
+    )
+    assert all(n.kind != "SHOW" for n in nodes)
+
+
+def test_build_candidate_nodes_repeat_counts_duplicates_node_with_suffixed_id():
+    children, live = _load_children_and_live()
+    preferences = Preferences(repeat_counts={"spacemountain": 3})
+    nodes = build_candidate_nodes(children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE")
+    matches = [n for n in nodes if n.id == SPACE_MOUNTAIN_ID or n.id.startswith(f"{SPACE_MOUNTAIN_ID}-visit-")]
+    assert {n.id for n in matches} == {
+        SPACE_MOUNTAIN_ID, f"{SPACE_MOUNTAIN_ID}-visit-2", f"{SPACE_MOUNTAIN_ID}-visit-3"
+    }
+
+
+def test_build_candidate_nodes_repeat_count_of_one_does_not_duplicate():
+    children, live = _load_children_and_live()
+    preferences = Preferences(repeat_counts={"spacemountain": 1})
+    nodes = build_candidate_nodes(children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE")
+    assert sum(1 for n in nodes if n.id.startswith(SPACE_MOUNTAIN_ID)) == 1
+
+
+def test_build_listing_nodes_is_unfiltered_by_tier():
+    children, live = _load_children_and_live()
+    preferences = Preferences(tiers={"starwarsriseoftheresistance": "SKIP"})
+    solvable = build_candidate_nodes(children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE")
+    listing = build_listing_nodes(children, live, ReliabilityProfile(), ride_duration_map=RIDE_DURATION_MAP)
+    assert not any(n.id == RISE_OF_THE_RESISTANCE_ID for n in solvable)
+    rise = next(n for n in listing if n.id == RISE_OF_THE_RESISTANCE_ID)
+    assert rise.service_time_minutes == 18
+
+
+def test_build_listing_nodes_includes_shows_and_attractions_regardless_of_mandatory_status():
+    children, live = _load_children_and_live()
+    listing = build_listing_nodes(children, live, ReliabilityProfile())
+    assert any(n.id == PAINT_THE_NIGHT_ID for n in listing)
+    assert all(not n.mandatory for n in listing)
 
 
 def test_build_plan_request_resolves_navigation_fields_from_raw_string_preferences():

@@ -93,6 +93,11 @@ class Preferences(BaseModel):
     planned_arrival: datetime | None = None
     planned_departure: datetime | None = None
     activity_blocks: list[ActivityBlock] = []
+    see_parade: bool = False
+    see_nighttime_show: bool = False
+    # Attraction id/slug -> desired visit count (e.g. 2 = ride it twice).
+    # Advanced/secondary setting -- absent or 1 means "once, same as always."
+    repeat_counts: dict[str, int] = {}
 
     def base_prize_for(self, slug: str | None, entity_id: str) -> float | None:
         """Returns None if the guest tagged this attraction SKIP (exclude from candidates)."""

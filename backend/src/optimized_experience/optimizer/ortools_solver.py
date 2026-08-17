@@ -192,6 +192,8 @@ class ORToolsSolver:
                         planned_arrival=arrival,
                         planned_departure=arrival + timedelta(minutes=cost),
                         rationale=self._rationale(node, opt, prize),
+                        wait_minutes=opt.wait_minutes,
+                        service_minutes=node.service_time_minutes,
                     )
                 )
             index = solution.Value(routing.NextVar(index))

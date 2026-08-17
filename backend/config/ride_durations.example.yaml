@@ -1,0 +1,55 @@
+# Copy to ride_durations.yaml (gitignored) if you want to adjust it.
+#
+# Hand-seeded from public knowledge of actual ride length -- no API exposes
+# this (themeparks.wiki doesn't return duration data at all; phase 1 used a
+# flat 4-minute guess for every attraction, which was wrong for almost all of
+# them). Same best-effort/refinable pattern as reliability_profile.yaml and
+# land_map.yaml. Keyed by slug where available, entity id otherwise. Minutes.
+durations:
+  starwarsriseoftheresistance: 18
+  piratesofthecaribbean: 15
+  waltdisneysenchantedtikiroom: 15
+  marktwainriverboat: 15
+  sailingshipcolumbia: 15
+  thedisneylandstorypresentinggreatmomentswithmrlincoln: 15
+  thedisneygallery: 15
+  itsasmallworld: 14
+  findingnemosubmarinevoyage: 13
+  pirateslairontomsawyerisland: 20
+  disneylandrailroad: 20
+  disneylandmonorail: 18
+  junglecruise: 10
+  storybooklandcanalboats: 10
+  mainstreetcinema: 10
+  mickeyshouseandmeetmickey: 10
+  a9076acd-7630-4bad-a8da-e6bd689ddcac: 11 # Tiana's Bayou Adventure
+  davycrockettsexplorercanoes: 8
+  hauntedmansion: 8
+  buzzlightyearastroblasters: 6
+  millenniumfalconsmugglersrun: 5
+  startourstheadventurescontinue: 5
+  caseyjrcircustrain: 5
+  rogerrabbitscartoonspin: 5
+  sleepingbeautycastlewalkthrough: 5
+  autopia: 5
+  frontierlandshootinexposition: 5
+  goofysplayhouse: 5
+  minnieshouse: 5
+  mainstreetvehicles: 3
+  matterhornbobsleds: 3
+  indianajonesadventure: 3
+  peterpansflight: 3
+  snowwhitesenchantedwish: 3
+  pinocchiosdaringjourney: 3
+  aliceinwonderland: 3
+  donaldsboat: 3
+  spacemountain: 3
+  bigthundermountainrailroad: 4
+  themanyadventuresofwinniethepooh: 4
+  gadgetsgocoaster: 2
+  kingarthurcarrousel: 2
+  mrtoadswildride: 2
+  fortunetellers: 2
+  astroorbitor: 1.5
+  dumbotheflyingelephant: 1.5
+  madteaparty: 1.5

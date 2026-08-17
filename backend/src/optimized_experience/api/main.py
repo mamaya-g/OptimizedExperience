@@ -11,12 +11,15 @@ Always live (no --replay equivalent): this is the "does this work end to end
 with live data" surface, not a demo/test entrypoint -- see scripts/demo_plan.py
 and the test suite's ReplayDataSource usage for offline verification instead.
 
-Preferences/reliability/land-map are reloaded from disk on every request
-(cheap YAML parsing), matching --watch's per-tick reload -- editing
-preferences.yaml takes effect on the next request without restarting the
-server. Solver/objective are chosen per request via query params; all other
-settings (tiers, activity blocks, navigation strategy, etc.) stay file-based,
-matching the deliberately-viewer-only scope of the frontend for this round.
+Reliability/land-map/ride-duration/show-category config are reloaded from disk
+on every request (cheap YAML parsing), matching --watch's per-tick reload --
+editing those files takes effect on the next request without restarting the
+server. Guest preferences, by contrast, are no longer file-based for this API:
+POST /api/plan takes the full Preferences object as its request body, since
+the frontend now collects them in the browser (localStorage), not from a
+server-side preferences.yaml -- that file remains the CLI's own input, untouched.
+Objective is still a query param; the solver is always OR-Tools here (the
+solver choice is a CLI/demo concern, not something the primary UI exposes).
 """
 
 from __future__ import annotations
@@ -32,9 +35,20 @@ from pydantic import BaseModel
 
 from optimized_experience.cli import DEFAULT_CONFIG_DIR, build_sources, generate_plan
 from optimized_experience.data.lands import load_land_map
-from optimized_experience.data.preferences import load_preferences
+from optimized_experience.data.models import PriceInfo
+from optimized_experience.data.preferences import Preferences
 from optimized_experience.data.reliability import load_reliability_profile
-from optimized_experience.optimizer.contracts import Objective, Plan
+from optimized_experience.data.ride_durations import load_ride_duration_map
+from optimized_experience.data.shows import load_show_category_map
+from optimized_experience.optimizer.contracts import (
+    LightningLaneType,
+    NodeKind,
+    Objective,
+    Plan,
+    ShowCategory,
+    TimeWindow,
+)
+from optimized_experience.planning import PARK_TIMEZONE, build_listing_nodes
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +66,7 @@ _cors_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -71,19 +85,43 @@ class PlanResponse(BaseModel):
     plan: Plan
 
 
+class AttractionListing(BaseModel):
+    """One row for the onboarding picker / swap list / build-your-own picker --
+    a deliberately slim view of Node: no base_prize, mandatory, or raw
+    wait_forecast, since those are solver-internal and this endpoint feeds UI
+    that should never need to know the solver exists."""
+
+    id: str
+    name: str
+    kind: NodeKind
+    land: str | None
+    show_category: ShowCategory | None
+    wait_minutes: float
+    duration_minutes: float
+    lightning_lane_type: LightningLaneType
+    lightning_lane_window: TimeWindow | None
+    lightning_lane_price: PriceInfo | None
+
+
+class AttractionsResponse(BaseModel):
+    generated_at: datetime
+    attractions: list[AttractionListing]
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/plan", response_model=PlanResponse)
-def get_plan(
+@app.post("/api/plan", response_model=PlanResponse)
+def post_plan(
+    preferences: Preferences,
     objective: str = Query("maximize_prize", pattern="^(maximize_prize|all_rides_challenge)$"),
-    solver: str = Query("greedy", pattern="^(greedy|ortools)$"),
 ) -> PlanResponse:
-    preferences = load_preferences(DEFAULT_CONFIG_DIR / "preferences.yaml")
     reliability_profile = load_reliability_profile(DEFAULT_CONFIG_DIR / "reliability_profile.yaml")
     land_map = load_land_map(DEFAULT_CONFIG_DIR / "land_map.yaml")
+    ride_duration_map = load_ride_duration_map(DEFAULT_CONFIG_DIR / "ride_durations.yaml")
+    show_category_map = load_show_category_map(DEFAULT_CONFIG_DIR / "show_categories.yaml")
 
     try:
         plan, start_time = generate_plan(
@@ -95,10 +133,45 @@ def get_plan(
             start_time_override=None,
             is_replay=False,
             land_map=land_map,
-            solver_name=solver,
+            ride_duration_map=ride_duration_map,
+            show_category_map=show_category_map,
+            solver_name="ortools",
         )
     except httpx.HTTPError as exc:
         logger.exception("Upstream data source failed")
         raise HTTPException(status_code=502, detail=f"Upstream park/weather data unavailable: {exc}") from exc
 
     return PlanResponse(generated_at=start_time, plan=plan)
+
+
+@app.get("/api/attractions", response_model=AttractionsResponse)
+def get_attractions() -> AttractionsResponse:
+    reliability_profile = load_reliability_profile(DEFAULT_CONFIG_DIR / "reliability_profile.yaml")
+    land_map = load_land_map(DEFAULT_CONFIG_DIR / "land_map.yaml")
+    ride_duration_map = load_ride_duration_map(DEFAULT_CONFIG_DIR / "ride_durations.yaml")
+    show_category_map = load_show_category_map(DEFAULT_CONFIG_DIR / "show_categories.yaml")
+
+    try:
+        children = _data_source.get_children()
+        live = _data_source.get_live()
+    except httpx.HTTPError as exc:
+        logger.exception("Upstream data source failed")
+        raise HTTPException(status_code=502, detail=f"Upstream park data unavailable: {exc}") from exc
+
+    nodes = build_listing_nodes(children, live, reliability_profile, land_map, ride_duration_map, show_category_map)
+    attractions = [
+        AttractionListing(
+            id=node.id,
+            name=node.name,
+            kind=node.kind,
+            land=node.land,
+            show_category=node.show_category,
+            wait_minutes=node.wait_estimate_minutes,
+            duration_minutes=node.service_time_minutes,
+            lightning_lane_type=node.lightning_lane_type,
+            lightning_lane_window=node.lightning_lane_window,
+            lightning_lane_price=node.lightning_lane_price,
+        )
+        for node in nodes
+    ]
+    return AttractionsResponse(generated_at=datetime.now(PARK_TIMEZONE), attractions=attractions)

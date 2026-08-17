@@ -39,6 +39,8 @@ class _Candidate(NamedTuple):
     cost_minutes: float
     deadline: datetime
     rationale: str
+    wait_minutes: float
+    service_minutes: float
 
 
 class _NavState(NamedTuple):
@@ -110,6 +112,8 @@ class GreedyChallengeSolver:
                     planned_arrival=best.arrival,
                     planned_departure=best.arrival + timedelta(minutes=best.cost_minutes),
                     rationale=best.rationale,
+                    wait_minutes=best.wait_minutes,
+                    service_minutes=best.service_minutes,
                 )
             )
             clock = best.arrival + timedelta(minutes=best.cost_minutes)
@@ -201,6 +205,8 @@ class GreedyChallengeSolver:
                             f"Redeem your Lightning Lane hold for {node.name} before it expires at "
                             f"{current_hold.return_end.strftime('%-I:%M %p')}."
                         ),
+                        wait_minutes=_LL_NOMINAL_ENTRY_WAIT_MINUTES,
+                        service_minutes=node.service_time_minutes,
                     )
                 )
             return candidates  # while holding this node's LL, standby/booking aren't offered
@@ -223,6 +229,8 @@ class GreedyChallengeSolver:
                             f"Book a Lightning Lane hold for {node.name} -- its return window closes "
                             f"at {window.end.strftime('%-I:%M %p')}."
                         ),
+                        wait_minutes=0.0,
+                        service_minutes=_LL_BOOKING_OVERHEAD_MINUTES,
                     )
                 )
 
@@ -245,6 +253,8 @@ class GreedyChallengeSolver:
                                 f"Use your Lightning Lane Single Pass for {node.name} before it closes at "
                                 f"{window.end.strftime('%-I:%M %p')}."
                             ),
+                            wait_minutes=_LL_NOMINAL_ENTRY_WAIT_MINUTES,
+                            service_minutes=node.service_time_minutes,
                         )
                     )
 
@@ -257,9 +267,10 @@ class GreedyChallengeSolver:
             # opens. No-op for attractions, whose window already covers clock
             # in practice.
             arrival = max(clock, window.start)
-            cost = max(node.wait_minutes_at(arrival) + node.service_time_minutes + nav_cost, _MIN_COST_MINUTES)
+            is_activity = node.kind == "ACTIVITY"
+            wait = 0.0 if is_activity else node.wait_minutes_at(arrival)
+            cost = max(wait + node.service_time_minutes + nav_cost, _MIN_COST_MINUTES)
             if arrival + timedelta(minutes=cost) <= min(window.end, budget_end):
-                is_activity = node.kind == "ACTIVITY"
                 action = "DO_ACTIVITY" if is_activity else "RIDE_STANDBY"
                 rationale = (
                     f"Take time for {node.name} -- it must fit by "
@@ -278,6 +289,8 @@ class GreedyChallengeSolver:
                         cost_minutes=cost,
                         deadline=window.end,
                         rationale=rationale,
+                        wait_minutes=wait,
+                        service_minutes=node.service_time_minutes,
                     )
                 )
         return candidates

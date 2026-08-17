@@ -45,10 +45,17 @@ class StandbyQueue(_LenientModel):
     waitTime: int | None = None
 
 
+class PriceInfo(_LenientModel):
+    amount: int
+    currency: str
+    formatted: str
+
+
 class ReturnTimeQueue(_LenientModel):
     state: Literal["AVAILABLE", "FINISHED", "TEMPORARILY_FULL", "NOT_YET_OPEN"] | None = None
     returnStart: datetime | None = None
     returnEnd: datetime | None = None
+    price: PriceInfo | None = None  # only ever present on PAID_RETURN_TIME (Single Pass)
 
 
 class Queue(_LenientModel):

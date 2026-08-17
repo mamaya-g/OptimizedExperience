@@ -11,6 +11,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
+from optimized_experience.data.models import PriceInfo
 from optimized_experience.data.preferences import WaterRideComfort
 from optimized_experience.data.reliability import ReliabilityTier
 from optimized_experience.data.weather_client import HourlyWeather
@@ -60,6 +61,7 @@ PlanAction = Literal[
 Objective = Literal["MAXIMIZE_PRIZE", "ALL_RIDES_CHALLENGE"]
 LightningLaneHoldStatus = Literal["BOOKED", "REDEEMED", "EXPIRED"]
 NavigationStrategy = Literal["TIME_OPTIMAL", "LAND_ORDER", "CLUSTERED"]
+ShowCategory = Literal["PARADE", "NIGHTTIME_SPECTACULAR", "OTHER"]
 
 
 class Node(BaseModel):
@@ -78,6 +80,8 @@ class Node(BaseModel):
     land: str | None = None
     mandatory: bool = False
     wait_forecast: list[WaitForecastEntry] = []
+    show_category: ShowCategory | None = None  # only set for kind == "SHOW"
+    lightning_lane_price: PriceInfo | None = None  # only meaningful for lightning_lane_type == "SINGLE"
 
     def is_feasible_at(self, moment: datetime) -> bool:
         return any(window.contains(moment) for window in self.time_windows)
@@ -123,6 +127,11 @@ class PlanStep(BaseModel):
     planned_arrival: datetime
     planned_departure: datetime
     rationale: str
+    # Required, not defaulted: every solver already knows these values when it
+    # builds a PlanStep (they drove its own cost/feasibility math) -- a UI
+    # needs the actual numbers (wait time, ride length), not just prose.
+    wait_minutes: float
+    service_minutes: float
 
 
 PLAN_DISCLAIMER = (

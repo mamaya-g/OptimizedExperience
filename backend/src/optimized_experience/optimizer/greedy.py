@@ -51,6 +51,8 @@ class _Candidate(NamedTuple):
     cost_minutes: float
     score: float
     rationale: str
+    wait_minutes: float
+    service_minutes: float
 
 
 class _NavState(NamedTuple):
@@ -130,6 +132,8 @@ class GreedySolver:
                     planned_arrival=best.arrival,
                     planned_departure=best.arrival + timedelta(minutes=best.cost_minutes),
                     rationale=best.rationale,
+                    wait_minutes=best.wait_minutes,
+                    service_minutes=best.service_minutes,
                 )
             )
             clock = best.arrival + timedelta(minutes=best.cost_minutes)
@@ -250,6 +254,8 @@ class GreedySolver:
                 cost_minutes=cost,
                 score=_score(prize, clock, arrival, cost),
                 rationale=self._rationale(node, verb, arrival, prize, request, nav_cost),
+                wait_minutes=0.0,
+                service_minutes=node.service_time_minutes,
             )
         ]
 
@@ -285,6 +291,8 @@ class GreedySolver:
                         rationale=self._rationale(
                             node, "redeem your Lightning Lane hold for", arrival, prize, request, nav_cost
                         ),
+                        wait_minutes=_LL_NOMINAL_ENTRY_WAIT_MINUTES,
+                        service_minutes=node.service_time_minutes,
                     )
                 )
             return candidates  # while holding this node's LL, standby/booking aren't offered
@@ -309,6 +317,8 @@ class GreedySolver:
                         rationale=self._rationale(
                             node, "book a Lightning Lane hold for", clock, anticipated_prize, request, 0.0
                         ),
+                        wait_minutes=0.0,
+                        service_minutes=_LL_BOOKING_OVERHEAD_MINUTES,
                     )
                 )
 
@@ -329,11 +339,14 @@ class GreedySolver:
                             rationale=self._rationale(
                                 node, "use your Lightning Lane Single Pass for", arrival, prize, request, nav_cost
                             ),
+                            wait_minutes=_LL_NOMINAL_ENTRY_WAIT_MINUTES,
+                            service_minutes=node.service_time_minutes,
                         )
                     )
 
         if node.is_feasible_at(clock):
-            cost = max(node.wait_minutes_at(clock) + node.service_time_minutes + nav_cost, _MIN_COST_MINUTES)
+            wait = node.wait_minutes_at(clock)
+            cost = max(wait + node.service_time_minutes + nav_cost, _MIN_COST_MINUTES)
             active_window = next(w for w in node.time_windows if w.contains(clock))
             if clock + timedelta(minutes=cost) <= min(active_window.end, budget_end):
                 prize = effective_prize(node, clock, request.hourly_forecast, request.water_ride_comfort)
@@ -347,6 +360,8 @@ class GreedySolver:
                         rationale=self._rationale(
                             node, "ride the standby line for", clock, prize, request, nav_cost
                         ),
+                        wait_minutes=wait,
+                        service_minutes=node.service_time_minutes,
                     )
                 )
         return candidates

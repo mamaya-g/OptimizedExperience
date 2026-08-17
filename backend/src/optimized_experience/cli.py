@@ -17,6 +17,8 @@ from optimized_experience.data.client import DataSource, ReplayDataSource, Theme
 from optimized_experience.data.lands import LandMap, load_land_map
 from optimized_experience.data.preferences import Preferences, load_preferences
 from optimized_experience.data.reliability import ReliabilityProfile, load_reliability_profile
+from optimized_experience.data.ride_durations import RideDurationMap, load_ride_duration_map
+from optimized_experience.data.shows import ShowCategoryMap, load_show_category_map
 from optimized_experience.data.weather_client import NWSWeatherSource, ReplayWeatherSource, WeatherSource
 from optimized_experience.optimizer.contracts import NavigationStrategy, Objective, Plan
 from optimized_experience.optimizer.factory import SolverName, get_solver
@@ -55,6 +57,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--reliability-profile", type=Path, default=DEFAULT_CONFIG_DIR / "reliability_profile.yaml"
     )
     parser.add_argument("--land-map", type=Path, default=DEFAULT_CONFIG_DIR / "land_map.yaml")
+    parser.add_argument(
+        "--ride-durations", type=Path, default=DEFAULT_CONFIG_DIR / "ride_durations.yaml"
+    )
+    parser.add_argument(
+        "--show-categories", type=Path, default=DEFAULT_CONFIG_DIR / "show_categories.yaml"
+    )
     parser.add_argument(
         "--solver",
         choices=["greedy", "ortools", "compare"],
@@ -126,6 +134,8 @@ def generate_plan(
     start_time_override: str | None,
     is_replay: bool,
     land_map: LandMap | None = None,
+    ride_duration_map: RideDurationMap | None = None,
+    show_category_map: ShowCategoryMap | None = None,
     solver_name: SolverName = "greedy",
 ) -> tuple[Plan, datetime]:
     children = data_source.get_children()
@@ -141,7 +151,8 @@ def generate_plan(
     park_close = resolve_park_close(schedule, start_time, preferences.planned_departure)
 
     candidate_nodes = build_candidate_nodes(
-        children, live, preferences, reliability_profile, objective, land_map
+        children, live, preferences, reliability_profile, objective, land_map,
+        ride_duration_map, show_category_map,
     )
     candidate_nodes += build_activity_nodes(preferences.activity_blocks, start_time, park_close)
     plan_request = build_plan_request(
@@ -191,6 +202,8 @@ def main(argv: list[str] | None = None) -> None:
             # effect on the next re-plan without restarting the process.
             reliability_profile = load_reliability_profile(args.reliability_profile)
             land_map = load_land_map(args.land_map)
+            ride_duration_map = load_ride_duration_map(args.ride_durations)
+            show_category_map = load_show_category_map(args.show_categories)
 
             for solver_name in solver_names:
                 for nav in nav_strategies:
@@ -198,6 +211,7 @@ def main(argv: list[str] | None = None) -> None:
                     plan, start_time = generate_plan(
                         objective, data_source, weather_source, preferences, reliability_profile,
                         args.start_time, is_replay=args.replay is not None, land_map=land_map,
+                        ride_duration_map=ride_duration_map, show_category_map=show_category_map,
                         solver_name=solver_name,
                     )
                     if multi_combo:
