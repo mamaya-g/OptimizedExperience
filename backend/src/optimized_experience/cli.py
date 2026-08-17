@@ -12,18 +12,24 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from optimized_experience.data.client import DataSource, ReplayDataSource, ThemeParksWikiSource
-from optimized_experience.data.models import ScheduleResponse
+from optimized_experience.data.lands import LandMap, load_land_map
 from optimized_experience.data.preferences import Preferences, load_preferences
 from optimized_experience.data.reliability import ReliabilityProfile, load_reliability_profile
 from optimized_experience.data.weather_client import NWSWeatherSource, ReplayWeatherSource, WeatherSource
-from optimized_experience.optimizer.contracts import Objective, Plan
+from optimized_experience.optimizer.contracts import NavigationStrategy, Objective, Plan
 from optimized_experience.optimizer.factory import get_solver
-from optimized_experience.planning import build_candidate_nodes, build_plan_request, opening_time_for
+from optimized_experience.planning import (
+    build_activity_nodes,
+    build_candidate_nodes,
+    build_plan_request,
+    resolve_park_close,
+    resolve_start_time,
+)
 
-PARK_TIMEZONE = ZoneInfo("America/Los_Angeles")
+NAVIGATION_STRATEGIES: list[NavigationStrategy] = ["TIME_OPTIMAL", "LAND_ORDER", "CLUSTERED"]
+
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 WATCH_INTERVAL_SECONDS = 120  # matches themeparks.wiki's live refresh cadence
 
@@ -48,15 +54,36 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reliability-profile", type=Path, default=DEFAULT_CONFIG_DIR / "reliability_profile.yaml"
     )
+    parser.add_argument("--land-map", type=Path, default=DEFAULT_CONFIG_DIR / "land_map.yaml")
     parser.add_argument(
-        "--watch", action="store_true", help="Re-fetch data and reprint the itinerary every ~2 minutes."
+        "--navigation",
+        choices=["time_optimal", "land_order", "clustered", "compare"],
+        default=None,
+        help="Override preferences.yaml's navigation_strategy for this run. 'compare' solves "
+        "the same day under all three strategies and prints all three so you can compare "
+        "(land_order requires preferences.yaml's land_order to be set).",
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Re-fetch data and reprint the itinerary every ~2 minutes. Also reloads "
+        "--preferences/--reliability-profile each tick, so editing those files between "
+        "ticks (e.g. flipping use_lightning_lane) takes effect without restarting.",
+    )
+    parser.add_argument(
+        "--no-lightning-lane",
+        action="store_true",
+        help="One-off override: plan the day with no Lightning Lane, regardless of what "
+        "preferences.yaml says.",
     )
     parser.add_argument(
         "--start-time",
         type=str,
         default=None,
-        help="ISO datetime to plan from. Default: replay mode uses the fixture's opening time; "
-        "live mode uses now (or park open, if the park hasn't opened yet).",
+        help="ISO datetime to plan from, overriding everything else including "
+        "preferences.yaml's planned_arrival. Default: preferences.yaml's planned_arrival if "
+        "set (never earlier than official park opening); otherwise replay mode uses the "
+        "fixture's opening time and live mode uses now (or park open, if not yet open).",
     )
     return parser
 
@@ -67,23 +94,17 @@ def build_sources(replay_dir: Path | None) -> tuple[DataSource, WeatherSource]:
     return ThemeParksWikiSource(), NWSWeatherSource()
 
 
-def _default_start_time(schedule: ScheduleResponse, is_replay: bool) -> datetime:
-    if is_replay:
-        first_entry = schedule.schedule[0]
-        if first_entry.openingTime is None:
-            raise ValueError("Replay schedule fixture has no opening time for its first entry.")
-        return first_entry.openingTime
-    now = datetime.now(PARK_TIMEZONE)
-    opening = opening_time_for(schedule, now)
-    if opening is not None and now < opening:
-        return opening
-    return now
-
-
-def _resolve_start_time(args: argparse.Namespace, schedule: ScheduleResponse) -> datetime:
-    if args.start_time:
-        return datetime.fromisoformat(args.start_time)
-    return _default_start_time(schedule, is_replay=args.replay is not None)
+def load_current_preferences(args: argparse.Namespace, navigation_override: str | None = None) -> Preferences:
+    preferences = load_preferences(args.preferences)
+    updates: dict[str, object] = {}
+    if args.no_lightning_lane:
+        updates["use_lightning_lane"] = False
+    nav = navigation_override or (args.navigation if args.navigation != "compare" else None)
+    if nav:
+        updates["navigation_strategy"] = nav.upper()
+    if updates:
+        preferences = preferences.model_copy(update=updates)
+    return preferences
 
 
 def generate_plan(
@@ -94,6 +115,7 @@ def generate_plan(
     reliability_profile: ReliabilityProfile,
     start_time_override: str | None,
     is_replay: bool,
+    land_map: LandMap | None = None,
 ) -> tuple[Plan, datetime]:
     children = data_source.get_children()
     live = data_source.get_live()
@@ -103,12 +125,16 @@ def generate_plan(
     start_time = (
         datetime.fromisoformat(start_time_override)
         if start_time_override
-        else _default_start_time(schedule, is_replay=is_replay)
+        else resolve_start_time(schedule, is_replay=is_replay, planned_arrival=preferences.planned_arrival)
     )
+    park_close = resolve_park_close(schedule, start_time, preferences.planned_departure)
 
-    candidate_nodes = build_candidate_nodes(children, live, preferences, reliability_profile, objective)
+    candidate_nodes = build_candidate_nodes(
+        children, live, preferences, reliability_profile, objective, land_map
+    )
+    candidate_nodes += build_activity_nodes(preferences.activity_blocks, start_time, park_close)
     plan_request = build_plan_request(
-        objective, start_time, schedule, candidate_nodes, hourly_forecast, preferences
+        objective, start_time, park_close, candidate_nodes, hourly_forecast, preferences
     )
     plan = get_solver(objective).solve(plan_request)
     return plan, start_time
@@ -127,6 +153,11 @@ def print_plan(plan: Plan, start_time: datetime) -> None:
     print(f"Total prize collected: {plan.total_prize:.1f}")
     if plan.unscheduled_node_ids:
         print(f"Unscheduled ({len(plan.unscheduled_node_ids)}): {', '.join(plan.unscheduled_node_ids)}")
+    if plan.unscheduled_mandatory_node_ids:
+        print(
+            f"\n*** WARNING: could not fit {len(plan.unscheduled_mandatory_node_ids)} mandatory "
+            f"block(s) into today's plan: {', '.join(plan.unscheduled_mandatory_node_ids)} ***"
+        )
     print(f"\n{plan.disclaimer}\n")
 
 
@@ -135,21 +166,35 @@ def main(argv: list[str] | None = None) -> None:
 
     objective: Objective = "MAXIMIZE_PRIZE" if args.mode == "maximize_prize" else "ALL_RIDES_CHALLENGE"
     data_source, weather_source = build_sources(args.replay)
-    preferences = load_preferences(args.preferences)
-    reliability_profile = load_reliability_profile(args.reliability_profile)
 
     try:
         while True:
-            plan, start_time = generate_plan(
-                objective,
-                data_source,
-                weather_source,
-                preferences,
-                reliability_profile,
-                args.start_time,
-                is_replay=args.replay is not None,
-            )
-            print_plan(plan, start_time)
+            reliability_profile = load_reliability_profile(args.reliability_profile)
+            land_map = load_land_map(args.land_map)
+
+            if args.navigation == "compare":
+                # Solve the same day under all three strategies and print all three
+                # side by side, following the same precedent as demo_plan.py running
+                # both objectives back-to-back.
+                for strategy in NAVIGATION_STRATEGIES:
+                    preferences = load_current_preferences(args, navigation_override=strategy)
+                    plan, start_time = generate_plan(
+                        objective, data_source, weather_source, preferences, reliability_profile,
+                        args.start_time, is_replay=args.replay is not None, land_map=land_map,
+                    )
+                    print(f"\n\n{'#' * 20} {strategy} {'#' * 20}")
+                    print_plan(plan, start_time)
+            else:
+                # Reloaded every tick (not just once before the loop) so a guest editing
+                # preferences.yaml mid-day -- e.g. turning Lightning Lane off -- takes
+                # effect on the next re-plan without restarting the process.
+                preferences = load_current_preferences(args)
+                plan, start_time = generate_plan(
+                    objective, data_source, weather_source, preferences, reliability_profile,
+                    args.start_time, is_replay=args.replay is not None, land_map=land_map,
+                )
+                print_plan(plan, start_time)
+
             if not args.watch:
                 break
             print(f"(re-planning again in {WATCH_INTERVAL_SECONDS}s -- Ctrl+C to stop)")

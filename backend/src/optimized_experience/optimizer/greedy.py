@@ -9,6 +9,10 @@ Lightning Lane Multi Pass is modeled as a capacity-1 resource (one BOOKED
 hold at a time) -- this is the genuine "Waze" analogue in the project: the
 solver continuously re-evaluates when to book/redeem as it walks forward in
 simulated time, the same shape as a live re-plan loop.
+
+Also threads real walking time (see optimizer/geography.py, navigation.py)
+between consecutive attractions, and supports three navigation strategies
+(TIME_OPTIMAL, LAND_ORDER, CLUSTERED) via PlanRequest.navigation_strategy.
 """
 
 from __future__ import annotations
@@ -16,14 +20,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from optimized_experience.optimizer import lightning_lane
+from optimized_experience.optimizer import lightning_lane, navigation
 from optimized_experience.optimizer.contracts import (
+    Coordinates,
     LightningLaneHold,
     Node,
     Plan,
     PlanRequest,
     PlanStep,
 )
+from optimized_experience.optimizer.geography import walk_minutes
 from optimized_experience.optimizer.scoring import (
     effective_prize,
     reliability_factor,
@@ -45,6 +51,21 @@ class _Candidate(NamedTuple):
     cost_minutes: float
     score: float
     rationale: str
+
+
+class _NavState(NamedTuple):
+    """Where the guest physically is, threaded through the solve loop.
+
+    restricted_land is only meaningful under LAND_ORDER: the land the solver
+    is currently confined to, advanced once that land's candidates run out
+    (see solve()). current_location/current_land are the last-visited node's
+    position, used for real walk-time (all strategies) and the CLUSTERED
+    land-switch penalty.
+    """
+
+    current_location: Coordinates | None
+    current_land: str | None
+    restricted_land: str | None
 
 
 def _score(prize: float, clock: datetime, arrival: datetime, cost_minutes: float) -> float:
@@ -76,11 +97,29 @@ class GreedySolver:
         steps: list[PlanStep] = []
         total_prize = 0.0
 
+        land_order_index = 0
+        nav = _NavState(
+            current_location=None,
+            current_land=None,
+            restricted_land=(
+                request.land_order[0]
+                if request.navigation_strategy == "LAND_ORDER" and request.land_order
+                else None
+            ),
+        )
+
         while remaining and clock < budget_end:
             current_hold = lightning_lane.expire_if_needed(current_hold, clock)
 
-            best = self._best_candidate(remaining, clock, budget_end, current_hold, request)
+            best = self._best_candidate(remaining, clock, budget_end, current_hold, request, nav)
             if best is None:
+                if (
+                    request.navigation_strategy == "LAND_ORDER"
+                    and land_order_index + 1 < len(request.land_order)
+                ):
+                    land_order_index += 1
+                    nav = nav._replace(restricted_land=request.land_order[land_order_index])
+                    continue
                 break
 
             steps.append(
@@ -96,6 +135,7 @@ class GreedySolver:
             clock = best.arrival + timedelta(minutes=best.cost_minutes)
 
             if best.action == "BOOK_LIGHTNING_LANE":
+                # An app action -- doesn't require being physically at the node.
                 window = best.node.lightning_lane_window
                 current_hold = LightningLaneHold(
                     node_id=best.node.id,
@@ -105,20 +145,27 @@ class GreedySolver:
                     status="BOOKED",
                 )
             else:
-                total_prize += effective_prize(
-                    best.node, best.arrival, request.hourly_forecast, request.water_ride_comfort
-                )
+                if not best.node.mandatory:
+                    # Mandatory activity blocks use a forcing prize constant to
+                    # guarantee scheduling (see planning.MANDATORY_ACTIVITY_PRIZE) --
+                    # it's not a real preference value, so it shouldn't inflate the
+                    # guest-facing total_prize metric.
+                    total_prize += effective_prize(
+                        best.node, best.arrival, request.hourly_forecast, request.water_ride_comfort
+                    )
                 consumed_ids.add(best.node.id)
                 del remaining[best.node.id]
                 if current_hold is not None and current_hold.node_id == best.node.id:
                     current_hold = lightning_lane.mark_redeemed(current_hold)
+                nav = nav._replace(current_location=best.node.location, current_land=best.node.land)
 
-        unscheduled = [node_id for node_id in remaining if node_id not in consumed_ids]
+        unscheduled_ids = [node_id for node_id in remaining if node_id not in consumed_ids]
         return Plan(
             steps=steps,
             total_prize=total_prize,
             solver_name=SOLVER_NAME,
-            unscheduled_node_ids=unscheduled,
+            unscheduled_node_ids=[nid for nid in unscheduled_ids if not remaining[nid].mandatory],
+            unscheduled_mandatory_node_ids=[nid for nid in unscheduled_ids if remaining[nid].mandatory],
         )
 
     def _best_candidate(
@@ -128,11 +175,16 @@ class GreedySolver:
         budget_end: datetime,
         current_hold: LightningLaneHold | None,
         request: PlanRequest,
+        nav: _NavState,
     ) -> _Candidate | None:
         candidates: list[_Candidate] = []
         for node in remaining.values():
+            if request.navigation_strategy == "LAND_ORDER" and not navigation.is_eligible_under_land_order(
+                node, nav.restricted_land
+            ):
+                continue
             candidates.extend(
-                self._candidates_for_node(node, clock, budget_end, current_hold, request)
+                self._candidates_for_node(node, clock, budget_end, current_hold, request, nav)
             )
         if not candidates:
             return None
@@ -145,10 +197,24 @@ class GreedySolver:
         budget_end: datetime,
         current_hold: LightningLaneHold | None,
         request: PlanRequest,
+        nav: _NavState,
     ) -> list[_Candidate]:
-        if node.kind == "SHOW":
-            return self._show_candidates(node, clock, budget_end, current_hold, request)
-        return self._attraction_candidates(node, clock, budget_end, current_hold, request)
+        nav_cost = self._navigation_cost(node, request, nav)
+        if node.kind in ("SHOW", "ACTIVITY"):
+            return self._show_candidates(node, clock, budget_end, current_hold, request, nav_cost)
+        return self._attraction_candidates(node, clock, budget_end, current_hold, request, nav_cost)
+
+    @staticmethod
+    def _navigation_cost(node: Node, request: PlanRequest, nav: _NavState) -> float:
+        """Real walk-time from wherever the guest currently is to this node,
+        plus a land-switch penalty under CLUSTERED. The same cost applies to
+        whichever action ends up chosen for this node (they all require
+        physically being there, except BOOK_LIGHTNING_LANE, which never calls
+        this)."""
+        base = walk_minutes(nav.current_location, node.location, request.walking_pace_mph)
+        return navigation.navigation_cost_minutes(
+            request.navigation_strategy, nav.current_land, node.land, base
+        )
 
     def _show_candidates(
         self,
@@ -157,27 +223,33 @@ class GreedySolver:
         budget_end: datetime,
         current_hold: LightningLaneHold | None,
         request: PlanRequest,
+        nav_cost: float,
     ) -> list[_Candidate]:
+        # Meal/shopping ACTIVITY blocks reuse this exact scheduling path: both
+        # are "arrive at a future window, cost = service_time, idle-wait-aware
+        # scoring" -- no separate scheduling subsystem needed.
         window = self._next_reachable_window(node, clock, budget_end)
         if window is None:
             return []
         arrival = max(clock, window.start)
         if self._would_skip_pending_hold(current_hold, arrival):
-            # Don't let a future show jump the clock past an already-booked,
+            # Don't let a future show/activity jump the clock past an already-booked,
             # not-yet-redeemed Lightning Lane window -- that would waste it.
             return []
-        cost = max(node.service_time_minutes, _MIN_COST_MINUTES)
+        cost = max(node.service_time_minutes + nav_cost, _MIN_COST_MINUTES)
         if arrival + timedelta(minutes=cost) > min(window.end, budget_end):
             return []
         prize = effective_prize(node, arrival, request.hourly_forecast, request.water_ride_comfort)
+        action = "WATCH_SHOW" if node.kind == "SHOW" else "DO_ACTIVITY"
+        verb = "watch" if node.kind == "SHOW" else "take time for"
         return [
             _Candidate(
                 node=node,
-                action="WATCH_SHOW",
+                action=action,
                 arrival=arrival,
                 cost_minutes=cost,
                 score=_score(prize, clock, arrival, cost),
-                rationale=self._rationale(node, "watch", arrival, prize, request),
+                rationale=self._rationale(node, verb, arrival, prize, request, nav_cost),
             )
         ]
 
@@ -188,6 +260,7 @@ class GreedySolver:
         budget_end: datetime,
         current_hold: LightningLaneHold | None,
         request: PlanRequest,
+        nav_cost: float,
     ) -> list[_Candidate]:
         candidates: list[_Candidate] = []
         held_by_this = lightning_lane.is_held_by(current_hold, node)
@@ -200,7 +273,7 @@ class GreedySolver:
             # just gives up instead of fast-forwarding to it.
             arrival = max(clock, current_hold.return_start)
             if arrival <= current_hold.return_end:
-                cost = max(_LL_NOMINAL_ENTRY_WAIT_MINUTES + node.service_time_minutes, _MIN_COST_MINUTES)
+                cost = max(_LL_NOMINAL_ENTRY_WAIT_MINUTES + node.service_time_minutes + nav_cost, _MIN_COST_MINUTES)
                 prize = effective_prize(node, arrival, request.hourly_forecast, request.water_ride_comfort)
                 candidates.append(
                     _Candidate(
@@ -210,7 +283,7 @@ class GreedySolver:
                         cost_minutes=cost,
                         score=_score(prize, clock, arrival, cost),
                         rationale=self._rationale(
-                            node, "redeem your Lightning Lane hold for", arrival, prize, request
+                            node, "redeem your Lightning Lane hold for", arrival, prize, request, nav_cost
                         ),
                     )
                 )
@@ -221,6 +294,7 @@ class GreedySolver:
         if node.lightning_lane_type == "MULTI" and resource_free and node.lightning_lane_window is not None:
             window = node.lightning_lane_window
             if window.end >= clock and window.start <= budget_end:
+                # Booking is an app action -- no travel required, so no nav_cost here.
                 cost = _LL_BOOKING_OVERHEAD_MINUTES
                 anticipated_prize = effective_prize(
                     node, max(clock, window.start), request.hourly_forecast, request.water_ride_comfort
@@ -233,7 +307,7 @@ class GreedySolver:
                         cost_minutes=cost,
                         score=anticipated_prize / cost,
                         rationale=self._rationale(
-                            node, "book a Lightning Lane hold for", clock, anticipated_prize, request
+                            node, "book a Lightning Lane hold for", clock, anticipated_prize, request, 0.0
                         ),
                     )
                 )
@@ -242,7 +316,7 @@ class GreedySolver:
             window = node.lightning_lane_window
             arrival = max(clock, window.start)
             if window.end >= clock and not self._would_skip_pending_hold(current_hold, arrival):
-                cost = max(_LL_NOMINAL_ENTRY_WAIT_MINUTES + node.service_time_minutes, _MIN_COST_MINUTES)
+                cost = max(_LL_NOMINAL_ENTRY_WAIT_MINUTES + node.service_time_minutes + nav_cost, _MIN_COST_MINUTES)
                 if arrival + timedelta(minutes=cost) <= min(window.end, budget_end):
                     prize = effective_prize(node, arrival, request.hourly_forecast, request.water_ride_comfort)
                     candidates.append(
@@ -253,13 +327,13 @@ class GreedySolver:
                             cost_minutes=cost,
                             score=_score(prize, clock, arrival, cost),
                             rationale=self._rationale(
-                                node, "use your Lightning Lane Single Pass for", arrival, prize, request
+                                node, "use your Lightning Lane Single Pass for", arrival, prize, request, nav_cost
                             ),
                         )
                     )
 
         if node.is_feasible_at(clock):
-            cost = max(node.wait_estimate_minutes + node.service_time_minutes, _MIN_COST_MINUTES)
+            cost = max(node.wait_minutes_at(clock) + node.service_time_minutes + nav_cost, _MIN_COST_MINUTES)
             active_window = next(w for w in node.time_windows if w.contains(clock))
             if clock + timedelta(minutes=cost) <= min(active_window.end, budget_end):
                 prize = effective_prize(node, clock, request.hourly_forecast, request.water_ride_comfort)
@@ -270,7 +344,9 @@ class GreedySolver:
                         arrival=clock,
                         cost_minutes=cost,
                         score=prize / cost,
-                        rationale=self._rationale(node, "ride the standby line for", clock, prize, request),
+                        rationale=self._rationale(
+                            node, "ride the standby line for", clock, prize, request, nav_cost
+                        ),
                     )
                 )
         return candidates
@@ -289,7 +365,9 @@ class GreedySolver:
         return min(upcoming, key=lambda w: w.start) if upcoming else None
 
     @staticmethod
-    def _rationale(node: Node, verb: str, moment: datetime, prize: float, request: PlanRequest) -> str:
+    def _rationale(
+        node: Node, verb: str, moment: datetime, prize: float, request: PlanRequest, nav_cost: float
+    ) -> str:
         reliability = reliability_factor(node.reliability_tier, moment)
         weather = weather_comfort_factor(
             node.is_water_ride,
@@ -301,5 +379,7 @@ class GreedySolver:
             parts.append(f", reliability adjustment x{reliability:.2f}")
         if weather != 1.0:
             parts.append(f", weather adjustment x{weather:.2f}")
+        if nav_cost >= 1.0:
+            parts.append(f", ~{nav_cost:.0f} min walk")
         parts.append(f") -> effective prize {prize:.1f} at {moment.strftime('%-I:%M %p')}.")
         return "".join(parts)

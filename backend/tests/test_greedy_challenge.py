@@ -2,7 +2,7 @@ from datetime import datetime
 
 from optimized_experience.optimizer.contracts import PlanRequest, TimeWindow
 from optimized_experience.optimizer.greedy_challenge import GreedyChallengeSolver
-from conftest import CLOSE, START, make_attraction, make_show
+from conftest import CLOSE, START, make_activity, make_attraction, make_show
 
 
 def _solve(nodes, **overrides):
@@ -57,6 +57,27 @@ def test_earliest_deadline_prioritized_over_higher_prize():
     )
     plan = _solve([urgent, relaxed])
     assert plan.steps[0].node_id == "urgent"  # closes soonest, visited first despite lower prize
+
+
+def test_mandatory_activity_still_happens_during_all_rides_challenge():
+    lunch = make_activity(
+        "lunch", time_windows=[TimeWindow(start=datetime(2026, 8, 16, 12, 0), end=datetime(2026, 8, 16, 13, 0))],
+    )
+    attractions = [make_attraction(f"r{i}", base_prize=10, service_time_minutes=2, wait_estimate_minutes=5)
+                   for i in range(3)]
+    plan = _solve([lunch, *attractions])
+    actions = [s.action for s in plan.steps]
+    assert "DO_ACTIVITY" in actions
+    assert "lunch" not in plan.unscheduled_mandatory_node_ids
+
+
+def test_mandatory_activity_prize_does_not_inflate_total_prize_in_challenge_mode():
+    lunch = make_activity(
+        "lunch", time_windows=[TimeWindow(start=datetime(2026, 8, 16, 12, 0), end=datetime(2026, 8, 16, 13, 0))],
+    )
+    attraction = make_attraction("a", base_prize=10, service_time_minutes=2, wait_estimate_minutes=5)
+    plan = _solve([lunch, attraction])
+    assert plan.total_prize == 10.0
 
 
 def test_lightning_lane_used_in_challenge_mode():
