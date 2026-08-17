@@ -96,8 +96,10 @@ export interface Preferences {
   planned_arrival: string | null;
   planned_departure: string | null;
   activity_blocks: ActivityBlock[];
-  see_parade: boolean;
-  see_nighttime_show: boolean;
+  // The specific show entity id the guest picked -- not a blanket "any
+  // parade" toggle, since a day can run several shows in the same category.
+  desired_parade_id: string | null;
+  desired_nighttime_show_id: string | null;
   repeat_counts: Record<string, number>;
 }
 
@@ -111,7 +113,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   planned_arrival: null,
   planned_departure: null,
   activity_blocks: [],
-  see_parade: false,
-  see_nighttime_show: false,
+  desired_parade_id: null,
+  desired_nighttime_show_id: null,
   repeat_counts: {},
 };

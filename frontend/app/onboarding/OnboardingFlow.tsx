@@ -10,10 +10,19 @@ import type {
   PreferenceTier,
   Preferences,
   WalkingPace,
+  WaterRideComfort,
 } from "../lib/types";
 import { AttractionPicker } from "./AttractionPicker";
 
-const STEPS = ["Attractions", "Meals & shopping", "Parades & shows", "Lightning Lane", "Final touches"] as const;
+const STEPS = [
+  "Attractions",
+  "Meals & shopping",
+  "Parades & shows",
+  "Water rides",
+  "Lightning Lane",
+  "Walking pace",
+  "Arrival & departure",
+] as const;
 
 function combineTodayWithTime(time: string): string {
   const [hours, minutes] = time.split(":").map(Number);
@@ -69,7 +78,19 @@ export function OnboardingFlow({
       const tiers = { ...prev.tiers };
       if (tier) tiers[id] = tier;
       else delete tiers[id];
-      return { ...prev, tiers };
+      // A ride you're no longer marking as wanted shouldn't keep a stale repeat count.
+      const repeat_counts = { ...prev.repeat_counts };
+      if (!tier || tier === "SKIP") delete repeat_counts[id];
+      return { ...prev, tiers, repeat_counts };
+    });
+  }
+
+  function setRepeatCount(id: string, count: number) {
+    setPreferences((prev) => {
+      const repeat_counts = { ...prev.repeat_counts };
+      if (count <= 1) delete repeat_counts[id];
+      else repeat_counts[id] = count;
+      return { ...prev, repeat_counts };
     });
   }
 
@@ -108,24 +129,30 @@ export function OnboardingFlow({
             {loading && <p className="py-8 text-center text-sm text-white/50">Loading today&apos;s attractions…</p>}
             {loadError && <p className="py-8 text-center text-sm text-rose-200">{loadError}</p>}
             {attractions && (
-              <AttractionPicker attractions={attractions} tiers={preferences.tiers} onChangeTier={setTier} />
+              <AttractionPicker
+                attractions={attractions}
+                tiers={preferences.tiers}
+                onChangeTier={setTier}
+                repeatCounts={preferences.repeat_counts}
+                onChangeRepeatCount={setRepeatCount}
+              />
             )}
           </>
         )}
 
         {stepIndex === 1 && <MealsAndShopping preferences={preferences} setPreferences={setPreferences} />}
 
-        {stepIndex === 2 && <ParadesAndShows preferences={preferences} setPreferences={setPreferences} />}
-
-        {stepIndex === 3 && <LightningLaneExplainer preferences={preferences} setPreferences={setPreferences} />}
-
-        {stepIndex === 4 && (
-          <AdvancedSettings
-            preferences={preferences}
-            setPreferences={setPreferences}
-            attractions={attractions ?? []}
-          />
+        {stepIndex === 2 && (
+          <ParadesAndShows preferences={preferences} setPreferences={setPreferences} attractions={attractions ?? []} />
         )}
+
+        {stepIndex === 3 && <WaterRideStep preferences={preferences} setPreferences={setPreferences} />}
+
+        {stepIndex === 4 && <LightningLaneExplainer preferences={preferences} setPreferences={setPreferences} />}
+
+        {stepIndex === 5 && <WalkingPaceStep preferences={preferences} setPreferences={setPreferences} />}
+
+        {stepIndex === 6 && <ArrivalDepartureStep preferences={preferences} setPreferences={setPreferences} />}
       </div>
 
       <div className="mt-6 flex items-center justify-between">
@@ -324,29 +351,82 @@ function MealBlockEditor({
   );
 }
 
+function formatShowTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 function ParadesAndShows({
   preferences,
   setPreferences,
+  attractions,
 }: {
   preferences: Preferences;
   setPreferences: React.Dispatch<React.SetStateAction<Preferences>>;
+  attractions: AttractionListing[];
+}) {
+  const parades = attractions.filter((a) => a.show_category === "PARADE");
+  const nightShows = attractions.filter((a) => a.show_category === "NIGHTTIME_SPECTACULAR");
+
+  return (
+    <div className="flex flex-col gap-6">
+      <p className="text-sm text-white/60">
+        Pick a specific one if you&apos;ve got your eye on it — we&apos;ll build the day around it. If it truly
+        can&apos;t fit, we&apos;ll tell you honestly instead of just dropping it silently.
+      </p>
+      <ShowPicker
+        title="Want to catch a parade?"
+        options={parades}
+        selectedId={preferences.desired_parade_id}
+        onSelect={(id) => setPreferences((p) => ({ ...p, desired_parade_id: id }))}
+        emptyText="No parade scheduled today."
+      />
+      <ShowPicker
+        title="Want to catch a nighttime show?"
+        options={nightShows}
+        selectedId={preferences.desired_nighttime_show_id}
+        onSelect={(id) => setPreferences((p) => ({ ...p, desired_nighttime_show_id: id }))}
+        emptyText="No nighttime show scheduled today."
+      />
+    </div>
+  );
+}
+
+function ShowPicker({
+  title,
+  options,
+  selectedId,
+  onSelect,
+  emptyText,
+}: {
+  title: string;
+  options: AttractionListing[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  emptyText: string;
 }) {
   return (
-    <div className="flex flex-col gap-4">
-      <p className="text-sm text-white/60">
-        If you ask for one of these, we&apos;ll build the day around it. If it truly can&apos;t fit, we&apos;ll
-        tell you honestly instead of just dropping it silently.
-      </p>
-      <ToggleRow
-        title="See today's parade"
-        checked={preferences.see_parade}
-        onChange={(v) => setPreferences((p) => ({ ...p, see_parade: v }))}
-      />
-      <ToggleRow
-        title="See a nighttime show"
-        checked={preferences.see_nighttime_show}
-        onChange={(v) => setPreferences((p) => ({ ...p, see_nighttime_show: v }))}
-      />
+    <div>
+      <p className="mb-2 text-sm font-semibold text-white">{title}</p>
+      {options.length === 0 ? (
+        <p className="text-sm text-white/40">{emptyText}</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <ChoiceCard selected={selectedId === null} onClick={() => onSelect(null)} title="Not today" body="Skip this one." />
+          {options.map((opt) => (
+            <ChoiceCard
+              key={opt.id}
+              selected={selectedId === opt.id}
+              onClick={() => onSelect(opt.id)}
+              title={opt.name}
+              body={
+                opt.time_windows.length > 0
+                  ? opt.time_windows.map((w) => formatShowTime(w.start)).join(" · ")
+                  : "Showtime not yet announced."
+              }
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -404,150 +484,111 @@ function ToggleRow({ title, checked, onChange }: { title: string; checked: boole
   );
 }
 
-const WALKING_PACE_OPTIONS: { value: WalkingPace; label: string }[] = [
-  { value: "SLOW", label: "Relaxed" },
-  { value: "AVERAGE", label: "Average" },
-  { value: "FAST", label: "Brisk" },
+const WATER_RIDE_OPTIONS: { value: WaterRideComfort; title: string; body: string }[] = [
+  { value: "DONT_MIND", title: "Ride them anytime", body: "Don't work around the weather — schedule water rides whenever they fit best." },
+  {
+    value: "MIND_IF_COOL",
+    title: "Skip them if it's cool or cloudy",
+    body: "Avoid scheduling water rides during cooler, overcast stretches of the day.",
+  },
+  {
+    value: "PREFER_AFTERNOON",
+    title: "Only in the afternoon",
+    body: "Only schedule water rides once it's warmed up later in the day.",
+  },
 ];
 
-function AdvancedSettings({
+function WaterRideStep({
   preferences,
   setPreferences,
-  attractions,
 }: {
   preferences: Preferences;
   setPreferences: React.Dispatch<React.SetStateAction<Preferences>>;
-  attractions: AttractionListing[];
 }) {
-  const [open, setOpen] = useState(false);
-  const rides = attractions.filter((a) => a.kind === "ATTRACTION");
-
   return (
     <div>
-      <div className="mb-4 flex flex-col gap-2">
-        <p className="text-sm font-semibold text-white">Arrival & departure</p>
-        <div className="flex items-center gap-2 text-sm">
-          <input
-            type="time"
-            value={timeFromIso(preferences.planned_arrival)}
-            onChange={(e) =>
-              setPreferences((p) => ({ ...p, planned_arrival: e.target.value ? combineTodayWithTime(e.target.value) : null }))
-            }
-            className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
+      <p className="mb-4 text-sm text-white/60">
+        Rides like Grizzly River Run are a lot less fun when it&apos;s cold or overcast. We check the day&apos;s
+        forecast — tell us how you feel about the timing.
+      </p>
+      <div className="flex flex-col gap-3">
+        {WATER_RIDE_OPTIONS.map((opt) => (
+          <ChoiceCard
+            key={opt.value}
+            selected={preferences.water_ride_comfort === opt.value}
+            onClick={() => setPreferences((p) => ({ ...p, water_ride_comfort: opt.value }))}
+            title={opt.title}
+            body={opt.body}
           />
-          <span className="text-white/40">to</span>
-          <input
-            type="time"
-            value={timeFromIso(preferences.planned_departure)}
-            onChange={(e) =>
-              setPreferences((p) => ({ ...p, planned_departure: e.target.value ? combineTodayWithTime(e.target.value) : null }))
-            }
-            className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
-          />
-          <span className="text-xs text-white/40">Leave blank to use park hours</span>
-        </div>
+        ))}
       </div>
-
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="text-sm font-medium text-amber-200 underline underline-offset-4"
-      >
-        {open ? "Hide advanced options" : "Show advanced options (walking pace, repeat rides)"}
-      </button>
-
-      {open && (
-        <div className="mt-4 flex flex-col gap-5">
-          <div>
-            <p className="mb-2 text-sm font-semibold text-white">Walking pace</p>
-            <div className="flex gap-2">
-              {WALKING_PACE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setPreferences((p) => ({ ...p, walking_pace: opt.value }))}
-                  className={`rounded-full px-4 py-1.5 text-sm font-medium ${
-                    preferences.walking_pace === opt.value
-                      ? "bg-amber-300 text-[#0a1e3f]"
-                      : "bg-white/5 text-white/60 hover:bg-white/10"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="mb-2 text-sm font-semibold text-white">Ride something more than once?</p>
-            <RepeatRidesEditor preferences={preferences} setPreferences={setPreferences} rides={rides} />
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-function RepeatRidesEditor({
+const WALKING_PACE_OPTIONS: { value: WalkingPace; label: string; body: string }[] = [
+  { value: "SLOW", label: "Relaxed", body: "More time between attractions, less rushing." },
+  { value: "AVERAGE", label: "Average", body: "A comfortable, typical pace." },
+  { value: "FAST", label: "Brisk", body: "Cover more ground, less time spent walking." },
+];
+
+function WalkingPaceStep({
   preferences,
   setPreferences,
-  rides,
 }: {
   preferences: Preferences;
   setPreferences: React.Dispatch<React.SetStateAction<Preferences>>;
-  rides: AttractionListing[];
 }) {
-  const entries = Object.entries(preferences.repeat_counts).filter(([, count]) => count > 1);
-  const [selectedId, setSelectedId] = useState(rides[0]?.id ?? "");
+  return (
+    <div>
+      <p className="mb-4 text-sm text-white/60">
+        How much ground do you want to cover between attractions? This changes how much walking time we budget
+        into your schedule.
+      </p>
+      <div className="flex flex-col gap-3">
+        {WALKING_PACE_OPTIONS.map((opt) => (
+          <ChoiceCard
+            key={opt.value}
+            selected={preferences.walking_pace === opt.value}
+            onClick={() => setPreferences((p) => ({ ...p, walking_pace: opt.value }))}
+            title={opt.label}
+            body={opt.body}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
 
-  function addRepeat() {
-    if (!selectedId) return;
-    setPreferences((p) => ({ ...p, repeat_counts: { ...p.repeat_counts, [selectedId]: 2 } }));
-  }
-
-  function setCount(id: string, count: number) {
-    setPreferences((p) => {
-      const repeat_counts = { ...p.repeat_counts };
-      if (count <= 1) delete repeat_counts[id];
-      else repeat_counts[id] = count;
-      return { ...p, repeat_counts };
-    });
-  }
-
+function ArrivalDepartureStep({
+  preferences,
+  setPreferences,
+}: {
+  preferences: Preferences;
+  setPreferences: React.Dispatch<React.SetStateAction<Preferences>>;
+}) {
   return (
     <div className="flex flex-col gap-2">
-      {entries.map(([id, count]) => {
-        const ride = rides.find((r) => r.id === id);
-        return (
-          <div key={id} className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-2 text-sm">
-            <span className="text-white">{ride?.name ?? id}</span>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setCount(id, count - 1)} className="text-white/60">
-                −
-              </button>
-              <span className="w-4 text-center text-white">{count}</span>
-              <button type="button" onClick={() => setCount(id, count + 1)} className="text-white/60">
-                +
-              </button>
-            </div>
-          </div>
-        );
-      })}
-      <div className="flex items-center gap-2">
-        <select
-          value={selectedId}
-          onChange={(e) => setSelectedId(e.target.value)}
-          className="flex-1 rounded-md border border-white/10 bg-white/5 px-2 py-1.5 text-sm text-white [&>option]:bg-[#0a1e3f]"
-        >
-          {rides.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-            </option>
-          ))}
-        </select>
-        <button type="button" onClick={addRepeat} className="rounded-md bg-white/10 px-3 py-1.5 text-sm text-white">
-          Add
-        </button>
+      <p className="text-sm font-semibold text-white">When are you at the park?</p>
+      <p className="text-sm text-white/60">Leave either blank to use official park hours.</p>
+      <div className="mt-2 flex items-center gap-2 text-sm">
+        <input
+          type="time"
+          value={timeFromIso(preferences.planned_arrival)}
+          onChange={(e) =>
+            setPreferences((p) => ({ ...p, planned_arrival: e.target.value ? combineTodayWithTime(e.target.value) : null }))
+          }
+          className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
+        />
+        <span className="text-white/40">to</span>
+        <input
+          type="time"
+          value={timeFromIso(preferences.planned_departure)}
+          onChange={(e) =>
+            setPreferences((p) => ({ ...p, planned_departure: e.target.value ? combineTodayWithTime(e.target.value) : null }))
+          }
+          className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-white"
+        />
       </div>
     </div>
   );

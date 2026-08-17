@@ -93,8 +93,13 @@ class Preferences(BaseModel):
     planned_arrival: datetime | None = None
     planned_departure: datetime | None = None
     activity_blocks: list[ActivityBlock] = []
-    see_parade: bool = False
-    see_nighttime_show: bool = False
+    # Specific show entity id the guest wants -- not a blanket "any parade"
+    # toggle, since a given day can have several shows in the same category
+    # (e.g. multiple nighttime spectaculars run in rotation) and marking all
+    # of them mandatory would overload the schedule with shows the guest
+    # never asked for.
+    desired_parade_id: str | None = None
+    desired_nighttime_show_id: str | None = None
     # Attraction id/slug -> desired visit count (e.g. 2 = ride it twice).
     # Advanced/secondary setting -- absent or 1 means "once, same as always."
     repeat_counts: dict[str, int] = {}

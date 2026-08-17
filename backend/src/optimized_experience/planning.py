@@ -159,15 +159,15 @@ def build_candidate_nodes(
 
         _, slug = _location_and_slug(entry.id, child_by_id)
 
-        # A parade/nighttime show the guest explicitly asked for (onboarding
-        # toggle) is mandatory the same way a meal block is -- guaranteed a
-        # scheduling attempt, honestly reported if it truly can't fit, and (for
+        # The specific parade/nighttime show the guest picked (onboarding) is
+        # mandatory the same way a meal block is -- guaranteed a scheduling
+        # attempt, honestly reported if it truly can't fit, and (for
         # ALL_RIDES_CHALLENGE below) included despite that mode otherwise
-        # excluding SHOW entities entirely.
-        category = show_category_map.category_for(slug, entry.id) if entry.entityType == "SHOW" else None
-        wants_this_show = (category == "PARADE" and preferences.see_parade) or (
-            category == "NIGHTTIME_SPECTACULAR" and preferences.see_nighttime_show
-        )
+        # excluding SHOW entities entirely. Matched by exact id, not category --
+        # a day can run several shows in the same category (e.g. multiple
+        # nighttime spectaculars), and the guest asked for one specific show,
+        # not "any show like this."
+        wants_this_show = entry.id in (preferences.desired_parade_id, preferences.desired_nighttime_show_id)
 
         base_prize = preferences.base_prize_for(slug, entry.id)
         if objective == "MAXIMIZE_PRIZE":
@@ -194,22 +194,43 @@ def build_candidate_nodes(
             node = node.model_copy(
                 update={"lightning_lane_type": "NONE", "lightning_lane_window": None, "lightning_lane_price": None}
             )
-        nodes.append(node)
-        nodes.extend(_repeated_copies(node, preferences, slug))
+        original, extra_visits = _repeated_copies(node, preferences, slug)
+        nodes.append(original)
+        nodes.extend(extra_visits)
     return nodes
 
 
-def _repeated_copies(node: Node, preferences: Preferences, slug: str | None) -> list[Node]:
-    """N-1 duplicate candidates (suffixed ids) for a guest-requested repeat
-    visit -- e.g. repeat_counts={"spacemountain": 2} rides it twice. Handled
-    as independent candidates rather than solver-level "revisit" logic, so
-    every existing solver schedules them for free."""
+def _split_window(windows: list[TimeWindow], count: int, index: int) -> list[TimeWindow]:
+    """Splits the first (usually only) operating window into `count` equal
+    chronological slices and returns the one at `index`."""
+    window = windows[0]
+    slice_length = (window.end - window.start) / count
+    return [TimeWindow(start=window.start + slice_length * index, end=window.start + slice_length * (index + 1))]
+
+
+def _repeated_copies(node: Node, preferences: Preferences, slug: str | None) -> tuple[Node, list[Node]]:
+    """Splits a guest-requested repeat visit (e.g. repeat_counts={"spacemountain":
+    3}) into `count` independent candidates, each restricted to its own slice of
+    the attraction's operating window. Without this, duplicate candidates sit at
+    the same location with the same wide time window, so a travel-minimizing
+    solver treats riding it again immediately as free and clusters them
+    back-to-back -- slicing the day up front is what actually spreads them out,
+    not a solver-level "no adjacent visits" constraint. Returns (the original
+    node, resliced to its own first slice; the N-1 extra suffixed-id copies)."""
     count = preferences.repeat_counts[slug] if slug and slug in preferences.repeat_counts else (
         preferences.repeat_counts.get(node.id, 1)
     )
     if count <= 1:
-        return []
-    return [node.model_copy(update={"id": f"{node.id}-visit-{i}"}) for i in range(2, count + 1)]
+        return node, []
+    original_windows = node.time_windows
+    original = node.model_copy(update={"time_windows": _split_window(original_windows, count, 0)})
+    extras = [
+        node.model_copy(
+            update={"id": f"{node.id}-visit-{i}", "time_windows": _split_window(original_windows, count, i - 1)}
+        )
+        for i in range(2, count + 1)
+    ]
+    return original, extras
 
 
 def build_listing_nodes(

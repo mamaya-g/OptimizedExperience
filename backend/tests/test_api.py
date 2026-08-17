@@ -6,6 +6,7 @@ shapes) on top of what test_planning.py already verifies at the unit level.
 from __future__ import annotations
 
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,19 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "disneyland_aug16"
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 
 RISE_OF_THE_RESISTANCE_ID = "34b1d70f-11c4-42df-935e-d5582c9f1a8e"
+PAINT_THE_NIGHT_ID = "c60e9de0-df2b-4484-9b05-299939dc247a"
+
+
+class _FixedDatetime(datetime):
+    """POST /api/plan always resolves "now" for real (is_replay=False, matching
+    production, which never uses replay data) -- but the fixture's live data is
+    all dated 2026-08-16, and every attraction's time window falls within that
+    one fixed day. Freeze the clock inside it so this test doesn't silently go
+    dark the moment the real calendar date moves past the fixture's date."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(2026, 8, 16, 9, 0, tzinfo=tz)
 
 
 @pytest.fixture
@@ -31,10 +45,12 @@ def client(tmp_path, monkeypatch):
         shutil.copy(example, tmp_config / example.name.replace(".example.yaml", ".yaml"))
 
     import optimized_experience.api.main as api_main
+    import optimized_experience.planning as planning_module
 
     monkeypatch.setattr(api_main, "DEFAULT_CONFIG_DIR", tmp_config)
     monkeypatch.setattr(api_main, "_data_source", ReplayDataSource(FIXTURE_DIR))
     monkeypatch.setattr(api_main, "_weather_source", ReplayWeatherSource(FIXTURE_DIR / "weather_hourly.json"))
+    monkeypatch.setattr(planning_module, "datetime", _FixedDatetime)
     return TestClient(api_main.app)
 
 
@@ -61,8 +77,8 @@ def test_post_plan_respects_objective_query_param(client):
     assert response.status_code == 200
 
 
-def test_post_plan_accepts_see_parade_preference(client):
-    response = client.post("/api/plan", json={"see_parade": True})
+def test_post_plan_accepts_desired_parade_id_preference(client):
+    response = client.post("/api/plan", json={"desired_parade_id": PAINT_THE_NIGHT_ID})
     assert response.status_code == 200
 
 

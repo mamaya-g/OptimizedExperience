@@ -216,7 +216,7 @@ def test_build_candidate_nodes_carries_lightning_lane_single_pass_price():
 
 def test_build_candidate_nodes_marks_requested_parade_mandatory():
     children, live = _load_children_and_live()
-    preferences = Preferences(see_parade=True)
+    preferences = Preferences(desired_parade_id=PAINT_THE_NIGHT_ID)
     nodes = build_candidate_nodes(
         children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
         show_category_map=SHOW_CATEGORY_MAP,
@@ -230,7 +230,7 @@ def test_build_candidate_nodes_marks_requested_parade_mandatory():
 def test_build_candidate_nodes_does_not_force_parade_when_not_requested():
     children, live = _load_children_and_live()
     nodes = build_candidate_nodes(
-        children, live, Preferences(see_parade=False), ReliabilityProfile(), "MAXIMIZE_PRIZE",
+        children, live, Preferences(), ReliabilityProfile(), "MAXIMIZE_PRIZE",
         show_category_map=SHOW_CATEGORY_MAP,
     )
     paint_the_night = next(n for n in nodes if n.id == PAINT_THE_NIGHT_ID)
@@ -240,7 +240,7 @@ def test_build_candidate_nodes_does_not_force_parade_when_not_requested():
 
 def test_build_candidate_nodes_marks_requested_nighttime_show_mandatory():
     children, live = _load_children_and_live()
-    preferences = Preferences(see_nighttime_show=True)
+    preferences = Preferences(desired_nighttime_show_id=WONDROUS_JOURNEYS_FIREWORKS_ID)
     nodes = build_candidate_nodes(
         children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
         show_category_map=SHOW_CATEGORY_MAP,
@@ -250,11 +250,27 @@ def test_build_candidate_nodes_marks_requested_nighttime_show_mandatory():
     assert wondrous.show_category == "NIGHTTIME_SPECTACULAR"
 
 
+def test_build_candidate_nodes_does_not_force_other_shows_in_same_category():
+    # Regression: a day can run several NIGHTTIME_SPECTACULAR shows at once
+    # (confirmed live: Fantasmic!, Wondrous Journeys, Shadows of Memory, Fire of
+    # the Rising Moons all categorized the same) -- picking one specific show
+    # must not drag every other show in its category along as mandatory too.
+    children, live = _load_children_and_live()
+    preferences = Preferences(desired_nighttime_show_id=WONDROUS_JOURNEYS_FIREWORKS_ID)
+    nodes = build_candidate_nodes(
+        children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE",
+        show_category_map=SHOW_CATEGORY_MAP,
+    )
+    fantasmic = next((n for n in nodes if n.name == "Fantasmic!"), None)
+    if fantasmic is not None:
+        assert fantasmic.mandatory is False
+
+
 def test_build_candidate_nodes_challenge_mode_still_includes_requested_parade():
     # ALL_RIDES_CHALLENGE otherwise excludes every SHOW entity outright -- a guest
     # explicitly asking to see the parade should still get it forced in.
     children, live = _load_children_and_live()
-    preferences = Preferences(see_parade=True)
+    preferences = Preferences(desired_parade_id=PAINT_THE_NIGHT_ID)
     nodes = build_candidate_nodes(
         children, live, preferences, ReliabilityProfile(), "ALL_RIDES_CHALLENGE",
         show_category_map=SHOW_CATEGORY_MAP,
@@ -279,6 +295,23 @@ def test_build_candidate_nodes_repeat_counts_duplicates_node_with_suffixed_id():
     assert {n.id for n in matches} == {
         SPACE_MOUNTAIN_ID, f"{SPACE_MOUNTAIN_ID}-visit-2", f"{SPACE_MOUNTAIN_ID}-visit-3"
     }
+
+
+def test_build_candidate_nodes_repeat_counts_are_spread_across_non_overlapping_windows():
+    # Regression: duplicate candidates used to share the same wide operating
+    # window, so a travel-minimizing solver (zero cost between visits to the
+    # same location) would happily schedule them back-to-back. Each repeat
+    # visit must get its own slice of the day so that can't happen.
+    children, live = _load_children_and_live()
+    preferences = Preferences(repeat_counts={"spacemountain": 3})
+    nodes = build_candidate_nodes(children, live, preferences, ReliabilityProfile(), "MAXIMIZE_PRIZE")
+    matches = sorted(
+        (n for n in nodes if n.id == SPACE_MOUNTAIN_ID or n.id.startswith(f"{SPACE_MOUNTAIN_ID}-visit-")),
+        key=lambda n: n.time_windows[0].start,
+    )
+    assert len(matches) == 3
+    for earlier, later in zip(matches, matches[1:]):
+        assert earlier.time_windows[0].end <= later.time_windows[0].start
 
 
 def test_build_candidate_nodes_repeat_count_of_one_does_not_duplicate():
