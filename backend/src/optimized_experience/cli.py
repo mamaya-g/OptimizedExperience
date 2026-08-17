@@ -19,7 +19,7 @@ from optimized_experience.data.preferences import Preferences, load_preferences
 from optimized_experience.data.reliability import ReliabilityProfile, load_reliability_profile
 from optimized_experience.data.weather_client import NWSWeatherSource, ReplayWeatherSource, WeatherSource
 from optimized_experience.optimizer.contracts import NavigationStrategy, Objective, Plan
-from optimized_experience.optimizer.factory import get_solver
+from optimized_experience.optimizer.factory import SolverName, get_solver
 from optimized_experience.planning import (
     build_activity_nodes,
     build_candidate_nodes,
@@ -55,6 +55,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--reliability-profile", type=Path, default=DEFAULT_CONFIG_DIR / "reliability_profile.yaml"
     )
     parser.add_argument("--land-map", type=Path, default=DEFAULT_CONFIG_DIR / "land_map.yaml")
+    parser.add_argument(
+        "--solver",
+        choices=["greedy", "ortools", "compare"],
+        default="greedy",
+        help="greedy = fast myopic heuristic. ortools = global routing search over real "
+        "travel time, provably-near-optimal but with documented simplifications (see "
+        "ortools_solver.py) -- Lightning Lane's book/redeem two-step collapses into one "
+        "visit, and prize/wait are computed once per node rather than dynamically. "
+        "'compare' solves with both and prints both.",
+    )
     parser.add_argument(
         "--navigation",
         choices=["time_optimal", "land_order", "clustered", "compare"],
@@ -116,6 +126,7 @@ def generate_plan(
     start_time_override: str | None,
     is_replay: bool,
     land_map: LandMap | None = None,
+    solver_name: SolverName = "greedy",
 ) -> tuple[Plan, datetime]:
     children = data_source.get_children()
     live = data_source.get_live()
@@ -136,7 +147,7 @@ def generate_plan(
     plan_request = build_plan_request(
         objective, start_time, park_close, candidate_nodes, hourly_forecast, preferences
     )
-    plan = get_solver(objective).solve(plan_request)
+    plan = get_solver(objective, solver_name).solve(plan_request)
     return plan, start_time
 
 
@@ -167,33 +178,36 @@ def main(argv: list[str] | None = None) -> None:
     objective: Objective = "MAXIMIZE_PRIZE" if args.mode == "maximize_prize" else "ALL_RIDES_CHALLENGE"
     data_source, weather_source = build_sources(args.replay)
 
+    solver_names: list[SolverName] = ["greedy", "ortools"] if args.solver == "compare" else [args.solver]
+    nav_strategies: list[str | None] = (
+        list(NAVIGATION_STRATEGIES) if args.navigation == "compare" else [None]
+    )
+    multi_combo = len(solver_names) > 1 or len(nav_strategies) > 1
+
     try:
         while True:
+            # Reloaded every tick (not just once before the loop) so a guest editing
+            # preferences.yaml mid-day -- e.g. turning Lightning Lane off -- takes
+            # effect on the next re-plan without restarting the process.
             reliability_profile = load_reliability_profile(args.reliability_profile)
             land_map = load_land_map(args.land_map)
 
-            if args.navigation == "compare":
-                # Solve the same day under all three strategies and print all three
-                # side by side, following the same precedent as demo_plan.py running
-                # both objectives back-to-back.
-                for strategy in NAVIGATION_STRATEGIES:
-                    preferences = load_current_preferences(args, navigation_override=strategy)
+            for solver_name in solver_names:
+                for nav in nav_strategies:
+                    preferences = load_current_preferences(args, navigation_override=nav)
                     plan, start_time = generate_plan(
                         objective, data_source, weather_source, preferences, reliability_profile,
                         args.start_time, is_replay=args.replay is not None, land_map=land_map,
+                        solver_name=solver_name,
                     )
-                    print(f"\n\n{'#' * 20} {strategy} {'#' * 20}")
+                    if multi_combo:
+                        label = " / ".join(
+                            part for part in (solver_name if len(solver_names) > 1 else None,
+                                               nav if len(nav_strategies) > 1 else None)
+                            if part
+                        )
+                        print(f"\n\n{'#' * 20} {label} {'#' * 20}")
                     print_plan(plan, start_time)
-            else:
-                # Reloaded every tick (not just once before the loop) so a guest editing
-                # preferences.yaml mid-day -- e.g. turning Lightning Lane off -- takes
-                # effect on the next re-plan without restarting the process.
-                preferences = load_current_preferences(args)
-                plan, start_time = generate_plan(
-                    objective, data_source, weather_source, preferences, reliability_profile,
-                    args.start_time, is_replay=args.replay is not None, land_map=land_map,
-                )
-                print_plan(plan, start_time)
 
             if not args.watch:
                 break
