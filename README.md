@@ -1,4 +1,4 @@
-# Optimized Experience
+# Optimized Disneyland Experience
 
 A Disneyland single-day itinerary optimizer -- a "day co-pilot" that turns your
 attraction preferences (must-see / would-like / skip), meal and parade/show
