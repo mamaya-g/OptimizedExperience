@@ -53,7 +53,7 @@ from optimized_experience.planning import PARK_TIMEZONE, build_listing_nodes
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Optimized Experience API",
+    title="Optimized Disneyland Experience API",
     description="Live Disneyland single-day itinerary optimizer -- greedy heuristic and OR-Tools routing search.",
 )
 

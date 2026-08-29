@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Optimized Experience",
+  title: "Optimized Disneyland Experience",
   description: "A companion for planning your day at Disneyland, built around your preferences and live wait times.",
 };
 

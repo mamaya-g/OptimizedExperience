@@ -67,7 +67,7 @@ export default function Home() {
         {stage !== "onboarding" && (
           <header className="pt-10 pb-2 text-center sm:pt-14">
             <p className="text-xs uppercase tracking-[0.2em] text-amber-300/80">Disneyland, one day</p>
-            <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Optimized Experience</h1>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Optimized Disneyland Experience</h1>
             <p className="mt-2 text-sm text-white/50">
               Your companion for planning a great day at the park, built around what matters to you.
             </p>

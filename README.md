@@ -281,3 +281,4 @@ frontend/
     page.tsx       # onboarding vs. results orchestration
 render.yaml       # Render deploy config for the backend (repo root, per Render's convention)
 ```
+
