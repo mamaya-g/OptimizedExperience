@@ -42,14 +42,36 @@ flow, both running against real Disneyland/weather data.
   every card, tap any card to mark it done), Adjust (reorder, swap in
   anything that didn't make the cut, re-optimize from your manual edits), and
   Build Your Own (same mechanism, empty start). No solver/prize jargon
-  anywhere in the primary UI. Two real bugs were found and fixed while
-  actually using it: a blanket "see a parade?" toggle would have force-scheduled
-  *every* show in a category (this park runs several nighttime spectaculars
-  in rotation) -- fixed by picking a specific show by id instead -- and
-  repeat-ride requests (e.g. "ride Space Mountain 3x") were landing
-  back-to-back in one sitting because a travel-minimizing solver treats
-  revisiting the same location as free -- fixed by giving each repeat visit
-  its own slice of the day.
+  anywhere in the primary UI.
+- Post-launch fixes, from actually using the thing and from guest-reported
+  complaints -- "the schedule stops at 8pm even though I said 11pm," "I can't
+  pick more than one show," "it always leaves out Fantasmic," "it put dinner
+  at 10am." Every one was a real bug, each verified against live park data
+  before any code changed:
+  - **Timezone handling, on both ends.** The browser localized the times a
+    guest typed to the *device's* timezone rather than the park's, and the
+    backend did `.replace(hour=...)` on a UTC-aware timestamp, which sets the
+    hour in UTC rather than park-local. So an 11pm-Eastern departure silently
+    became 8pm Pacific, and dinner bounds could land at 10am. Fixed with a
+    DST-safe, dependency-free park-time conversion in the browser
+    (`frontend/app/lib/parkTime.ts`) and a `_park_local_hour()` normalization
+    on the backend.
+  - **Show selection.** A blanket "see a parade?" toggle force-scheduled
+    *every* show in a category (this park runs several nighttime spectaculars
+    in rotation). Replacing it with a single-pick list then overcorrected and
+    allowed only one. Shows now use the same Must-see/Would-like/Skip tier
+    system as attractions, so any number can be must-see.
+  - **Zero-width showtimes.** themeparks.wiki sometimes reports a showtime
+    with `startTime == endTime` -- observed live for Fantasmic! and Paint the
+    Night -- a single announced instant rather than a real duration, which
+    produced an unschedulable zero-width time window no matter how the show
+    was tagged. That was the real reason Fantasmic kept getting dropped. The
+    duration is now resolved before the window is built, and a degenerate
+    window is widened to match it.
+  - **Repeat rides** (e.g. "ride Space Mountain 3x") were landing
+    back-to-back in one sitting, because a travel-minimizing solver treats
+    revisiting the same location as free -- fixed by giving each repeat visit
+    its own slice of the day.
 
 **Deferred:** indoor/outdoor/shaded queue status per attraction -- no
 reliable public data source covers all ~50 attractions (only scattered blog
